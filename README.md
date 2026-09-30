@@ -55,21 +55,27 @@ npm run dev
 ---
 
 ### 2️⃣ Khởi chạy AI Microservice (`backend-ai`)
+
+**🔹 A. Cài đặt Lần đầu tiên (Ngay sau khi clone code):**
 ```bash
 cd backend-ai
 
-# 1. Tạo và Kích hoạt Môi trường ảo Python (Virtualenv)
+# 1. Tạo môi trường ảo (Virtualenv)
 python -m venv venv
 
-# Trên Windows PowerShell:
+# 2. Kích hoạt môi trường (Trên Windows PowerShell)
 .\venv\Scripts\Activate.ps1
-# Trên Linux/macOS:
-# source venv/bin/activate
+# (Trên Linux/macOS thì dùng: source venv/bin/activate)
 
-# 2. Cài đặt các thư viện AI & Web Server
+# 3. Tải và cài đặt các thư viện AI
 pip install -r requirements.txt
+```
 
-# 3. Khởi chạy FastAPI Server
+**🔹 B. Khởi chạy hằng ngày (Từ lần thứ 2 trở đi):**
+Mỗi khi mở máy lên làm việc, bạn không cần cài lại thư viện, chỉ cần bật môi trường và chạy server:
+```bash
+cd backend-ai
+.\venv\Scripts\Activate.ps1
 uvicorn main:app --reload --port 8000
 ```
 🌐 **Địa chỉ AI Service:** `http://localhost:8000/`  
@@ -97,7 +103,12 @@ uvicorn main:app --reload --port 8000
 * **Sử dụng Terminal Command:**
   ```bash
   cd backend-java
-  ./mvnw spring-boot:run
+  
+  # Trên Windows:
+  .\mvnw.cmd spring-boot:run
+  
+  # Trên Mac/Linux:
+  # ./mvnw spring-boot:run
   ```
 🌐 **Địa chỉ Backend API:** `http://localhost:8080/api/v1/emotions/health`
 
