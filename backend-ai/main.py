@@ -3,7 +3,11 @@ import binascii
 import io
 import os
 import threading
+from functools import lru_cache
+from pathlib import Path
 
+import cv2
+import numpy as np
 import torch
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -35,27 +39,51 @@ EMOTION_EMOJIS = {
     "Fear": "😨",
     "Disgust": "🤢"
 }
-HF_MODEL_ID = os.getenv("HF_EMOTION_MODEL_ID", "trpakov/vit-face-expression")
+MODEL_PATH = Path(os.getenv(
+    "EMOTION_MODEL_PATH",
+    Path(__file__).resolve().parent / "models" / "mobilenetv3_large_emotion.pth",
+))
 
 _model = None
-_processor = None
-_model_labels = None
+_preprocess = None
+_model_labels = EMOTIONS
 _model_lock = threading.Lock()
 
 class Base64ImageRequest(BaseModel):
     image_base64: str
 
 
-def get_huggingface_labels(network):
-    label_map = network.config.id2label
-    return [
-        label_map.get(index, label_map.get(str(index), "")).strip().lower()
-        for index in range(network.config.num_labels)
-    ]
+@lru_cache(maxsize=1)
+def get_face_detector():
+    cascade_path = Path(cv2.data.haarcascades) / "haarcascade_frontalface_default.xml"
+    detector = cv2.CascadeClassifier(str(cascade_path))
+    if detector.empty():
+        raise RuntimeError(f"Could not load face detector: {cascade_path}")
+    return detector
+
+
+def crop_largest_face(image: Image.Image) -> Image.Image:
+    grayscale = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2GRAY)
+    faces = get_face_detector().detectMultiScale(
+        grayscale,
+        scaleFactor=1.1,
+        minNeighbors=5,
+        minSize=(24, 24),
+    )
+    if len(faces) == 0:
+        return image
+
+    x, y, width, height = max(faces, key=lambda face: face[2] * face[3])
+    margin = int(max(width, height) * 0.2)
+    left = max(0, x - margin)
+    top = max(0, y - margin)
+    right = min(image.width, x + width + margin)
+    bottom = min(image.height, y + height + margin)
+    return image.crop((left, top, right, bottom))
 
 
 def load_model():
-    global _model, _processor, _model_labels
+    global _model, _preprocess, _model_labels
 
     if _model is not None:
         return _model
@@ -64,19 +92,54 @@ def load_model():
         if _model is not None:
             return _model
         try:
-            from transformers import AutoImageProcessor, AutoModelForImageClassification
+            from torchvision import transforms
+            from torchvision.models import mobilenet_v3_large
 
-            _processor = AutoImageProcessor.from_pretrained(HF_MODEL_ID, use_fast=False)
-            network = AutoModelForImageClassification.from_pretrained(
-                HF_MODEL_ID,
-                use_safetensors=True,
+            if not MODEL_PATH.is_file():
+                raise FileNotFoundError(
+                    f"MobileNetV3-Large emotion checkpoint not found: {MODEL_PATH}. "
+                    "Set EMOTION_MODEL_PATH or place the trained .pth file there."
+                )
+
+            checkpoint = torch.load(MODEL_PATH, map_location="cpu", weights_only=True)
+            labels = EMOTIONS
+            image_size = 224
+            if isinstance(checkpoint, dict):
+                labels = checkpoint.get("labels", EMOTIONS)
+                image_size = checkpoint.get("image_size", image_size)
+                state_dict = checkpoint.get(
+                    "state_dict",
+                    checkpoint.get("model_state_dict", checkpoint.get("model", checkpoint)),
+                )
+            else:
+                state_dict = checkpoint
+
+            normalized_labels = [str(label).strip().lower() for label in labels]
+            if len(normalized_labels) != len(EMOTIONS) or set(normalized_labels) != {
+                emotion.lower() for emotion in EMOTIONS
+            }:
+                raise ValueError(f"Checkpoint has an unexpected emotion label set: {labels}")
+
+            network = mobilenet_v3_large(weights=None)
+            network.classifier[-1] = torch.nn.Linear(
+                network.classifier[-1].in_features,
+                len(normalized_labels),
             )
-            _model_labels = get_huggingface_labels(network)
-            if set(_model_labels) != {emotion.lower() for emotion in EMOTIONS}:
-                raise ValueError(f"Model has an unexpected emotion label set: {_model_labels}")
+            network.load_state_dict(state_dict)
+            _model_labels = [next(
+                emotion for emotion in EMOTIONS if emotion.lower() == label
+            ) for label in normalized_labels]
 
             network.to("cpu")
             network.eval()
+            _preprocess = transforms.Compose([
+                transforms.Resize((image_size, image_size)),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=(0.485, 0.456, 0.406),
+                    std=(0.229, 0.224, 0.225),
+                ),
+            ])
             _model = network
             return _model
         except HTTPException:
@@ -97,17 +160,18 @@ def decode_image(image_bytes: bytes) -> Image.Image:
 
 def run_inference(image: Image.Image):
     network = load_model()
+    face_image = crop_largest_face(image)
 
     try:
         with torch.inference_mode():
-            model_inputs = _processor(images=image, return_tensors="pt")
-            logits = network(**model_inputs).logits[0]
+            model_input = _preprocess(face_image).unsqueeze(0)
+            logits = network(model_input)[0]
             scores = torch.softmax(logits, dim=0)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Emotion inference failed: {exc}") from exc
 
     probabilities = {
-        emotion: float(scores[_model_labels.index(emotion.lower())].item())
+        emotion: float(scores[_model_labels.index(emotion)].item())
         for emotion in EMOTIONS
     }
     predicted_emotion = max(probabilities, key=probabilities.get)
@@ -124,7 +188,7 @@ def read_root():
     return {
         "status": "online",
         "service": "Emotion Recognition AI Service",
-        "model": HF_MODEL_ID,
+        "model": "MobileNetV3-Large",
         "modelLoaded": _model is not None,
         "version": "1.0.0"
     }
