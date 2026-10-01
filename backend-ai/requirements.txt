@@ -6,5 +6,5 @@ pillow
 numpy
 torch
 torchvision
+pyarrow
 opencv-python-headless
-transformers
