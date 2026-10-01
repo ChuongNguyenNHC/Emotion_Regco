@@ -64,6 +64,9 @@ cd backend-ai
 python -m venv venv
 
 # 2. Kích hoạt môi trường (Trên Windows PowerShell)
+# ⚠️ Nếu gặp lỗi "cannot be loaded because running scripts is disabled", hãy chạy lệnh này 1 lần trước:
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+
 .\venv\Scripts\Activate.ps1
 # (Trên Linux/macOS thì dùng: source venv/bin/activate)
 
