@@ -8,7 +8,12 @@ from torch import nn
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
-from torchvision.models import MobileNet_V3_Large_Weights, mobilenet_v3_large
+from torchvision.models import (
+    EfficientNet_B0_Weights,
+    MobileNet_V3_Large_Weights,
+    efficientnet_b0,
+    mobilenet_v3_large,
+)
 
 
 EMOTIONS = {"Angry", "Disgust", "Fear", "Happy", "Sad", "Surprise", "Neutral"}
@@ -20,7 +25,7 @@ BACKEND_DIR = Path(__file__).resolve().parent
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Fine-tune MobileNetV3-Large for seven-class facial emotion recognition."
+        description="Fine-tune EfficientNet-B0 or MobileNetV3 for facial emotion recognition."
     )
     parser.add_argument(
         "--data-dir",
@@ -28,6 +33,7 @@ def parse_args():
         default=BACKEND_DIR / "data" / "emotion",
         help="Folder containing train/ and val/ ImageFolder datasets.",
     )
+    parser.add_argument("--model-name", choices=("efficientnet_b0", "mobilenetv3"), default="efficientnet_b0")
     parser.add_argument("--warmup-epochs", type=int, default=5)
     parser.add_argument("--finetune-epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=32)
@@ -153,7 +159,7 @@ def evaluate(model, loader, criterion, device):
 
 def train_phase(model, train_loader, val_loader, criterion, optimizer, device,
                 epochs, patience, phase_name, fine_tuning, scheduler_min_lr,
-                output, labels, image_size, best_accuracy, best_state):
+                output, labels, image_size, model_name, best_accuracy, best_state):
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=epochs, eta_min=scheduler_min_lr
     )
@@ -181,6 +187,7 @@ def train_phase(model, train_loader, val_loader, criterion, optimizer, device,
                     "state_dict": best_state,
                     "labels": labels,
                     "image_size": image_size,
+                    "model_name": model_name,
                     "val_accuracy": val_accuracy,
                     "phase": phase_name,
                     "epoch": epoch,
@@ -228,15 +235,21 @@ def main():
         pin_memory=device.type == "cuda",
     )
 
-    model = mobilenet_v3_large(weights=MobileNet_V3_Large_Weights.IMAGENET1K_V2)
-    model.classifier[2].p = 0.5
-    model.classifier[-1] = nn.Linear(model.classifier[-1].in_features, len(labels))
+    if args.model_name == "efficientnet_b0":
+        model = efficientnet_b0(weights=EfficientNet_B0_Weights.DEFAULT)
+        model.classifier[0].p = 0.4
+        model.classifier[1] = nn.Linear(model.classifier[1].in_features, len(labels))
+    else:
+        model = mobilenet_v3_large(weights=MobileNet_V3_Large_Weights.IMAGENET1K_V2)
+        model.classifier[2].p = 0.5
+        model.classifier[-1] = nn.Linear(model.classifier[-1].in_features, len(labels))
+
     model.to(device)
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     class_counts = torch.bincount(torch.tensor(train_set.targets), minlength=len(labels)).float()
-    class_weights = (class_counts.sum() / (len(labels) * class_counts)).to(device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.05)
+    class_weights = torch.sqrt(class_counts.sum() / (len(labels) * class_counts)).to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.03)
     best_accuracy = -1.0
     best_state = None
 
@@ -251,7 +264,7 @@ def main():
     best_accuracy, best_state = train_phase(
         model, train_loader, val_loader, criterion, warmup_optimizer, device,
         args.warmup_epochs, args.patience, "warm-up", False, 1e-6,
-        args.output, labels, args.image_size, best_accuracy, best_state,
+        args.output, labels, args.image_size, args.model_name, best_accuracy, best_state,
     )
 
     layer_count = set_trainable_layers(model, args.unfreeze_last_layers)
@@ -271,7 +284,7 @@ def main():
     best_accuracy, best_state = train_phase(
         model, train_loader, val_loader, criterion, fine_tune_optimizer, device,
         args.finetune_epochs, args.patience, "fine-tune", True, 1e-6,
-        args.output, labels, args.image_size, best_accuracy, best_state,
+        args.output, labels, args.image_size, args.model_name, best_accuracy, best_state,
     )
 
     if best_state is not None:

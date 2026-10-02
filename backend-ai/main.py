@@ -47,6 +47,7 @@ MODEL_PATH = Path(os.getenv(
 _model = None
 _preprocess = None
 _model_labels = EMOTIONS
+_model_name_display = "EfficientNet-B0"
 _model_lock = threading.Lock()
 
 class Base64ImageRequest(BaseModel):
@@ -88,7 +89,7 @@ def crop_largest_face(image: Image.Image) -> Image.Image:
 
 
 def load_model():
-    global _model, _preprocess, _model_labels
+    global _model, _preprocess, _model_labels, _model_name_display
 
     if _model is not None:
         return _model
@@ -98,20 +99,22 @@ def load_model():
             return _model
         try:
             from torchvision import transforms
-            from torchvision.models import mobilenet_v3_large
+            from torchvision.models import efficientnet_b0, mobilenet_v3_large
 
             if not MODEL_PATH.is_file():
                 raise FileNotFoundError(
-                    f"MobileNetV3-Large emotion checkpoint not found: {MODEL_PATH}. "
+                    f"Emotion checkpoint not found: {MODEL_PATH}. "
                     "Set EMOTION_MODEL_PATH or place the trained .pth file there."
                 )
 
             checkpoint = torch.load(MODEL_PATH, map_location="cpu", weights_only=True)
             labels = EMOTIONS
             image_size = 224
+            model_name = "efficientnet_b0"
             if isinstance(checkpoint, dict):
                 labels = checkpoint.get("labels", EMOTIONS)
                 image_size = checkpoint.get("image_size", image_size)
+                model_name = checkpoint.get("model_name", model_name)
                 state_dict = checkpoint.get(
                     "state_dict",
                     checkpoint.get("model_state_dict", checkpoint.get("model", checkpoint)),
@@ -125,11 +128,22 @@ def load_model():
             }:
                 raise ValueError(f"Checkpoint has an unexpected emotion label set: {labels}")
 
-            network = mobilenet_v3_large(weights=None)
-            network.classifier[-1] = torch.nn.Linear(
-                network.classifier[-1].in_features,
-                len(normalized_labels),
-            )
+            is_efficientnet = model_name == "efficientnet_b0" or any(k.startswith("features.0.0") for k in state_dict.keys())
+            if is_efficientnet:
+                network = efficientnet_b0(weights=None)
+                network.classifier[1] = torch.nn.Linear(
+                    network.classifier[1].in_features,
+                    len(normalized_labels),
+                )
+                _model_name_display = "EfficientNet-B0"
+            else:
+                network = mobilenet_v3_large(weights=None)
+                network.classifier[-1] = torch.nn.Linear(
+                    network.classifier[-1].in_features,
+                    len(normalized_labels),
+                )
+                _model_name_display = "MobileNetV3-Large"
+
             network.load_state_dict(state_dict)
             _model_labels = [next(
                 emotion for emotion in EMOTIONS if emotion.lower() == label
@@ -185,6 +199,7 @@ def run_inference(image: Image.Image):
         "emotion": predicted_emotion,
         "emoji": EMOTION_EMOJIS[predicted_emotion],
         "confidence": probabilities[predicted_emotion],
+        "model": _model_name_display,
         "probabilities": probabilities,
     }
 
@@ -193,7 +208,7 @@ def read_root():
     return {
         "status": "online",
         "service": "Emotion Recognition AI Service",
-        "model": "MobileNetV3-Large",
+        "model": _model_name_display if _model is not None else "EfficientNet-B0 (Default)",
         "modelLoaded": _model is not None,
         "version": "1.0.0"
     }
