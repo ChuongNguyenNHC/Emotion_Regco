@@ -2,8 +2,9 @@
 
 @layer base {
   body {
-    @apply bg-slate-950 text-slate-100 antialiased selection:bg-indigo-500 selection:text-white;
+    @apply bg-slate-50 text-slate-800 antialiased selection:bg-indigo-500 selection:text-white;
     font-family: 'Inter', system-ui, -apple-system, sans-serif;
   }
 }
+
 

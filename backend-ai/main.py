@@ -63,23 +63,28 @@ def get_face_detector():
 
 
 def crop_largest_face(image: Image.Image) -> Image.Image:
-    grayscale = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2GRAY)
-    faces = get_face_detector().detectMultiScale(
-        grayscale,
-        scaleFactor=1.1,
-        minNeighbors=5,
-        minSize=(24, 24),
-    )
-    if len(faces) == 0:
-        return image
+    try:
+        if not hasattr(cv2, "CascadeClassifier"):
+            return image
+        grayscale = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2GRAY)
+        faces = get_face_detector().detectMultiScale(
+            grayscale,
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(24, 24),
+        )
+        if len(faces) == 0:
+            return image
 
-    x, y, width, height = max(faces, key=lambda face: face[2] * face[3])
-    margin = int(max(width, height) * 0.2)
-    left = max(0, x - margin)
-    top = max(0, y - margin)
-    right = min(image.width, x + width + margin)
-    bottom = min(image.height, y + height + margin)
-    return image.crop((left, top, right, bottom))
+        x, y, width, height = max(faces, key=lambda face: face[2] * face[3])
+        margin = int(max(width, height) * 0.2)
+        left = max(0, x - margin)
+        top = max(0, y - margin)
+        right = min(image.width, x + width + margin)
+        bottom = min(image.height, y + height + margin)
+        return image.crop((left, top, right, bottom))
+    except Exception:
+        return image
 
 
 def load_model():
