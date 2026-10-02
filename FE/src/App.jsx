@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from "react";
 import { Camera, LayoutDashboard, History, Sparkles, Activity, Smile, BarChart3, Wifi, WifiOff, RefreshCw, Clock, User, ChevronRight, AlertCircle, Play, Square, Eye, Zap } from "lucide-react";
 
 const API_BASE = "http://localhost:8080/api/v1/emotions";
-const CAPTURE_INTERVAL_MS = 3000;
+const CAPTURE_INTERVAL_MS = 1500;
 
 const EMOTION_META = {
   Happy: { emoji: "😊", color: "bg-emerald-500", text: "text-emerald-700", bgLight: "bg-emerald-50", border: "border-emerald-200", label: "Vui vẻ", ring: "ring-emerald-400" },
@@ -54,6 +54,7 @@ function RealtimeTab({ backendOk }) {
   const canvasRef = useRef(null);
   const streamRef = useRef(null);
   const intervalRef = useRef(null);
+  const analyzingRef = useRef(false);
   const [cameraOn, setCameraOn] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
@@ -64,12 +65,13 @@ function RealtimeTab({ backendOk }) {
     if (intervalRef.current) clearInterval(intervalRef.current);
     if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
     streamRef.current = null;
+    analyzingRef.current = false;
     setCameraOn(false);
     setFrameCount(0);
   }, []);
 
   const captureAndAnalyze = useCallback(async () => {
-    if (!videoRef.current || !canvasRef.current) return;
+    if (!videoRef.current || !canvasRef.current || analyzingRef.current) return;
     const video = videoRef.current;
     const canvas = canvasRef.current;
     if (video.readyState < 2) return;
@@ -77,6 +79,7 @@ function RealtimeTab({ backendOk }) {
     canvas.height = video.videoHeight;
     canvas.getContext("2d").drawImage(video, 0, 0);
     const base64 = canvas.toDataURL("image/jpeg", 0.7).split(",")[1];
+    analyzingRef.current = true;
     setAnalyzing(true);
     setError(null);
     try {
@@ -89,7 +92,7 @@ function RealtimeTab({ backendOk }) {
       if (data.success) { setResult(data); setFrameCount(c => c + 1); }
       else setError(data.message || "AI không phát hiện được khuôn mặt");
     } catch (e) { setError("Không thể kết nối tới Backend API: " + e.message); }
-    finally { setAnalyzing(false); }
+    finally { analyzingRef.current = false; setAnalyzing(false); }
   }, []);
 
   const startCamera = useCallback(async () => {
