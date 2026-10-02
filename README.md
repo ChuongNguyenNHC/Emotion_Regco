@@ -102,7 +102,6 @@ uvicorn main:app --reload --port 8000
    > ⚠️ **LƯU Ý:** File `.env` chứa mật khẩu đã được thêm vào `.gitignore`, tuyệt đối **KHÔNG** push file `.env` chứa mật khẩu thật lên GitHub public.
 
 #### 🏃 Chạy Spring Boot Application:
-* **Sử dụng VS Code / IntelliJ:** Mở folder `backend-java`, tìm file `src/main/java/com/emotion/BackendJavaApplication.java` và chọn **Run**.
 * **Sử dụng Terminal Command:**
   ```bash
   cd backend-java
