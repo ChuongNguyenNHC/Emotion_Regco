@@ -39,28 +39,30 @@ public class EmotionController {
     public ResponseEntity<?> proxyAnalyzeBase64(@RequestBody Map<String, Object> payload) {
         String targetUrl = aiServiceUrl + "/api/v1/predict-base64";
         try {
-            // 1. Call FastAPI AI Service
+
             ResponseEntity<Map> aiResponse = restTemplate.postForEntity(targetUrl, payload, Map.class);
             Map<String, Object> body = aiResponse.getBody();
 
             if (body != null && Boolean.TRUE.equals(body.get("success"))) {
-                // 2. Save prediction history into MongoDB Atlas
-                EmotionRecord record = new EmotionRecord();
-                record.setUserId((String) payload.getOrDefault("userId", "guest"));
-                record.setDominantEmotion((String) body.get("emotion"));
-                record.setEmoji((String) body.get("emoji"));
-                
-                Object confObj = body.get("confidence");
-                if (confObj instanceof Number) {
-                    record.setConfidence(((Number) confObj).doubleValue());
-                }
-                
-                if (body.get("probabilities") instanceof Map) {
-                    record.setProbabilities((Map<String, Double>) body.get("probabilities"));
-                }
-                record.setCreatedAt(LocalDateTime.now());
+                String userId = (String) payload.get("userId");
+                if (userId != null && !userId.trim().isEmpty() && !"guest".equalsIgnoreCase(userId.trim())) {
+                    EmotionRecord record = new EmotionRecord();
+                    record.setUserId(userId.trim());
+                    record.setDominantEmotion((String) body.get("emotion"));
+                    record.setEmoji((String) body.get("emoji"));
 
-                emotionRecordRepository.save(record);
+                    Object confObj = body.get("confidence");
+                    if (confObj instanceof Number) {
+                        record.setConfidence(((Number) confObj).doubleValue());
+                    }
+
+                    if (body.get("probabilities") instanceof Map) {
+                        record.setProbabilities((Map<String, Double>) body.get("probabilities"));
+                    }
+                    record.setCreatedAt(LocalDateTime.now());
+
+                    emotionRecordRepository.save(record);
+                }
             }
 
             return ResponseEntity.ok(body);
@@ -73,8 +75,21 @@ public class EmotionController {
     }
 
     @GetMapping("/history")
-    public ResponseEntity<List<EmotionRecord>> getRecentHistory() {
+    public ResponseEntity<List<EmotionRecord>> getRecentHistory(@RequestParam(required = false) String userId) {
+        if (userId != null && !userId.trim().isEmpty()) {
+            return ResponseEntity.ok(emotionRecordRepository.findByUserIdOrderByCreatedAtDesc(userId));
+        }
         return ResponseEntity.ok(emotionRecordRepository.findTop20ByOrderByCreatedAtDesc());
+    }
+
+    @DeleteMapping("/clear-guest")
+    public ResponseEntity<Map<String, Object>> clearGuestRecords() {
+        long deletedCount = emotionRecordRepository.deleteByUserId("guest");
+        Map<String, Object> res = new HashMap<>();
+        res.put("success", true);
+        res.put("deletedCount", deletedCount);
+        res.put("message", "Đã dọn sạch " + deletedCount + " bản ghi cũ của khách (guest)!");
+        return ResponseEntity.ok(res);
     }
 }
 

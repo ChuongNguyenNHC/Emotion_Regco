@@ -9,4 +9,5 @@ import java.util.List;
 public interface EmotionRecordRepository extends MongoRepository<EmotionRecord, String> {
     List<EmotionRecord> findTop20ByOrderByCreatedAtDesc();
     List<EmotionRecord> findByUserIdOrderByCreatedAtDesc(String userId);
+    long deleteByUserId(String userId);
 }
