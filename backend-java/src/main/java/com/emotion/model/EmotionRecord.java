@@ -16,11 +16,12 @@ public class EmotionRecord {
 
     @Id
     private String id;
-    
-    private String userId;           // "guest" or logged in userId
-    private String dominantEmotion;  // e.g. "Happy", "Sad"
-    private String emoji;            // e.g. "😊"
-    private Double confidence;       // e.g. 0.87
+
+    private String userId; // "guest" or logged in userId
+    private String dominantEmotion; // e.g. "Happy", "Sad"
+    private String emoji; // e.g. "😊"
+    private Double confidence; // e.g. 0.87
     private Map<String, Double> probabilities; // Detail breakdown
     private LocalDateTime createdAt = LocalDateTime.now();
+
 }
