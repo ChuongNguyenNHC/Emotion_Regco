@@ -4,9 +4,12 @@ import com.emotion.model.EmotionRecord;
 import com.emotion.repository.EmotionRecordRepository;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.ResponseEntity;
+import org.springframework.http.*;
+import org.springframework.util.LinkedMultiValueMap;
+import org.springframework.util.MultiValueMap;
 import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.HashMap;
@@ -40,7 +43,8 @@ public class EmotionController {
         String targetUrl = aiServiceUrl + "/api/v1/predict-base64";
         try {
 
-            ResponseEntity<Map> aiResponse = restTemplate.postForEntity(targetUrl, payload, Map.class);
+            @SuppressWarnings("unchecked")
+            ResponseEntity<Map<String, Object>> aiResponse = (ResponseEntity<Map<String, Object>>) (ResponseEntity<?>) restTemplate.postForEntity(targetUrl, payload, Map.class);
             Map<String, Object> body = aiResponse.getBody();
 
             if (body != null && Boolean.TRUE.equals(body.get("success"))) {
@@ -56,10 +60,17 @@ public class EmotionController {
                         record.setConfidence(((Number) confObj).doubleValue());
                     }
 
-                    if (body.get("probabilities") instanceof Map) {
-                        record.setProbabilities((Map<String, Double>) body.get("probabilities"));
+                    if (body.get("probabilities") instanceof Map<?, ?> probMap) {
+                        Map<String, Double> convertedMap = new HashMap<>();
+                        for (Map.Entry<?, ?> entry : probMap.entrySet()) {
+                            if (entry.getKey() != null && entry.getValue() instanceof Number num) {
+                                convertedMap.put(entry.getKey().toString(), num.doubleValue());
+                            }
+                        }
+                        record.setProbabilities(convertedMap);
                     }
                     record.setCreatedAt(LocalDateTime.now());
+                    record.setSourceType("REALTIME_CAMERA");
 
                     emotionRecordRepository.save(record);
                 }
@@ -70,6 +81,68 @@ public class EmotionController {
             Map<String, Object> error = new HashMap<>();
             error.put("success", false);
             error.put("message", "Failed to analyze & store emotion: " + e.getMessage());
+            return ResponseEntity.status(500).body(error);
+        }
+    }
+
+    @PostMapping(value = "/analyze-video", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<?> proxyAnalyzeVideo(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "userId", required = false, defaultValue = "guest") String userId) {
+        String targetUrl = aiServiceUrl + "/api/v1/predict-video";
+        try {
+            HttpHeaders headers = new HttpHeaders();
+            headers.setContentType(MediaType.MULTIPART_FORM_DATA);
+
+            MultiValueMap<String, Object> bodyMap = new LinkedMultiValueMap<>();
+            org.springframework.core.io.ByteArrayResource fileResource = new org.springframework.core.io.ByteArrayResource(file.getBytes()) {
+                @Override
+                public String getFilename() {
+                    return file.getOriginalFilename() != null ? file.getOriginalFilename() : "video.mp4";
+                }
+            };
+            bodyMap.add("file", fileResource);
+
+            HttpEntity<MultiValueMap<String, Object>> requestEntity = new HttpEntity<>(bodyMap, headers);
+
+            @SuppressWarnings("unchecked")
+            ResponseEntity<Map<String, Object>> aiResponse = restTemplate.postForEntity(targetUrl, requestEntity, (Class<Map<String, Object>>)(Class<?>)Map.class);
+            Map<String, Object> body = aiResponse.getBody();
+
+            if (body != null && Boolean.TRUE.equals(body.get("success"))) {
+                if (userId != null && !userId.trim().isEmpty() && !"guest".equalsIgnoreCase(userId.trim())) {
+                    EmotionRecord record = new EmotionRecord();
+                    record.setUserId(userId.trim());
+                    record.setDominantEmotion((String) body.get("dominantEmotion"));
+                    record.setEmoji((String) body.get("emoji"));
+
+                    if (body.get("distribution") instanceof Map<?, ?> distMap) {
+                        Map<String, Double> convertedMap = new HashMap<>();
+                        for (Map.Entry<?, ?> entry : distMap.entrySet()) {
+                            if (entry.getKey() != null && entry.getValue() instanceof Number num) {
+                                convertedMap.put(entry.getKey().toString(), num.doubleValue() / 100.0);
+                            }
+                        }
+                        record.setProbabilities(convertedMap);
+
+                        // Set confidence as the proportion of the dominant emotion
+                        String domEmo = (String) body.get("dominantEmotion");
+                        if (domEmo != null && convertedMap.containsKey(domEmo)) {
+                            record.setConfidence(convertedMap.get(domEmo));
+                        }
+                    }
+                    record.setCreatedAt(LocalDateTime.now());
+                    record.setSourceType("UPLOADED_VIDEO");
+                    record.setVideoFileName(file.getOriginalFilename());
+                    emotionRecordRepository.save(record);
+                }
+            }
+
+            return ResponseEntity.ok(body);
+        } catch (Exception e) {
+            Map<String, Object> error = new HashMap<>();
+            error.put("success", false);
+            error.put("message", "Failed to analyze video: " + e.getMessage());
             return ResponseEntity.status(500).body(error);
         }
     }
