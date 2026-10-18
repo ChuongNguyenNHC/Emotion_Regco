@@ -4,13 +4,11 @@ import org.springframework.data.annotation.Id;
 import org.springframework.data.mongodb.core.mapping.Document;
 import lombok.Data;
 import lombok.NoArgsConstructor;
-import lombok.AllArgsConstructor;
 import java.time.LocalDateTime;
 import java.util.Map;
 
 @Data
 @NoArgsConstructor
-@AllArgsConstructor
 @Document(collection = "emotion_records")
 public class EmotionRecord {
 
@@ -22,6 +20,7 @@ public class EmotionRecord {
     private String emoji; // e.g. "😊"
     private Double confidence; // e.g. 0.87
     private Map<String, Double> probabilities; // Detail breakdown
+    private String sourceType = "REALTIME_CAMERA"; // "REALTIME_CAMERA" or "UPLOADED_VIDEO"
+    private String videoFileName; // optional filename when sourceType is UPLOADED_VIDEO
     private LocalDateTime createdAt = LocalDateTime.now();
-
 }
