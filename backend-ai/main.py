@@ -2,6 +2,8 @@ import base64
 import binascii
 import io
 import os
+import shutil
+import tempfile
 import threading
 from functools import lru_cache
 from pathlib import Path
@@ -47,6 +49,7 @@ MODEL_PATH = Path(os.getenv(
 _model = None
 _preprocess = None
 _model_labels = EMOTIONS
+_model_name_display = "EfficientNet-B0"
 _model_lock = threading.Lock()
 
 class Base64ImageRequest(BaseModel):
@@ -63,27 +66,43 @@ def get_face_detector():
 
 
 def crop_largest_face(image: Image.Image) -> Image.Image:
-    grayscale = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2GRAY)
-    faces = get_face_detector().detectMultiScale(
-        grayscale,
-        scaleFactor=1.1,
-        minNeighbors=5,
-        minSize=(24, 24),
-    )
-    if len(faces) == 0:
-        return image
+    try:
+        if not hasattr(cv2, "CascadeClassifier"):
+            return image
+        grayscale = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2GRAY)
+        # Apply histogram equalization to normalize brightness/contrast
+        grayscale = cv2.equalizeHist(grayscale)
 
-    x, y, width, height = max(faces, key=lambda face: face[2] * face[3])
-    margin = int(max(width, height) * 0.2)
-    left = max(0, x - margin)
-    top = max(0, y - margin)
-    right = min(image.width, x + width + margin)
-    bottom = min(image.height, y + height + margin)
-    return image.crop((left, top, right, bottom))
+        faces = get_face_detector().detectMultiScale(
+            grayscale,
+            scaleFactor=1.1,
+            minNeighbors=4,
+            minSize=(32, 32),
+        )
+        if len(faces) == 0:
+            return image
+
+        x, y, width, height = max(faces, key=lambda face: face[2] * face[3])
+
+        # Extra margins: forehead (top: 25%), chin (bottom: 20%), sides: 15%
+        # This captures eye-brow wrinkles (Angry/Surprise) and mouth curvature (Sad/Disgust)
+        top_margin = int(height * 0.25)
+        bottom_margin = int(height * 0.18)
+        side_margin = int(width * 0.15)
+
+        left = max(0, x - side_margin)
+        top = max(0, y - top_margin)
+        right = min(image.width, x + width + side_margin)
+        bottom = min(image.height, y + height + bottom_margin)
+
+        cropped = image.crop((left, top, right, bottom))
+        return cropped
+    except Exception:
+        return image
 
 
 def load_model():
-    global _model, _preprocess, _model_labels
+    global _model, _preprocess, _model_labels, _model_name_display
 
     if _model is not None:
         return _model
@@ -93,20 +112,22 @@ def load_model():
             return _model
         try:
             from torchvision import transforms
-            from torchvision.models import mobilenet_v3_large
+            from torchvision.models import efficientnet_b0, mobilenet_v3_large
 
             if not MODEL_PATH.is_file():
                 raise FileNotFoundError(
-                    f"MobileNetV3-Large emotion checkpoint not found: {MODEL_PATH}. "
+                    f"Emotion checkpoint not found: {MODEL_PATH}. "
                     "Set EMOTION_MODEL_PATH or place the trained .pth file there."
                 )
 
             checkpoint = torch.load(MODEL_PATH, map_location="cpu", weights_only=True)
             labels = EMOTIONS
             image_size = 224
+            model_name = "efficientnet_b0"
             if isinstance(checkpoint, dict):
                 labels = checkpoint.get("labels", EMOTIONS)
                 image_size = checkpoint.get("image_size", image_size)
+                model_name = checkpoint.get("model_name", model_name)
                 state_dict = checkpoint.get(
                     "state_dict",
                     checkpoint.get("model_state_dict", checkpoint.get("model", checkpoint)),
@@ -120,11 +141,22 @@ def load_model():
             }:
                 raise ValueError(f"Checkpoint has an unexpected emotion label set: {labels}")
 
-            network = mobilenet_v3_large(weights=None)
-            network.classifier[-1] = torch.nn.Linear(
-                network.classifier[-1].in_features,
-                len(normalized_labels),
-            )
+            is_efficientnet = model_name == "efficientnet_b0" or any(k.startswith("features.0.0") for k in state_dict.keys())
+            if is_efficientnet:
+                network = efficientnet_b0(weights=None)
+                network.classifier[1] = torch.nn.Linear(
+                    network.classifier[1].in_features,
+                    len(normalized_labels),
+                )
+                _model_name_display = "EfficientNet-B0"
+            else:
+                network = mobilenet_v3_large(weights=None)
+                network.classifier[-1] = torch.nn.Linear(
+                    network.classifier[-1].in_features,
+                    len(normalized_labels),
+                )
+                _model_name_display = "MobileNetV3-Large"
+
             network.load_state_dict(state_dict)
             _model_labels = [next(
                 emotion for emotion in EMOTIONS if emotion.lower() == label
@@ -158,6 +190,18 @@ def decode_image(image_bytes: bytes) -> Image.Image:
         raise HTTPException(status_code=400, detail="Request does not contain a valid image") from exc
 
 
+# Sensitivity calibrators: Boost hard-to-detect subtle emotions (Angry, Sad, Surprise, Fear)
+# and reduce slight over-confidence of Happy & Neutral caused by dataset bias.
+EMOTION_SENSITIVITY = {
+    "Angry": 1.25,
+    "Disgust": 1.30,
+    "Fear": 1.25,
+    "Happy": 0.90,
+    "Neutral": 0.90,
+    "Sad": 1.20,
+    "Surprise": 1.15,
+}
+
 def run_inference(image: Image.Image):
     network = load_model()
     face_image = crop_largest_face(image)
@@ -166,7 +210,14 @@ def run_inference(image: Image.Image):
         with torch.inference_mode():
             model_input = _preprocess(face_image).unsqueeze(0)
             logits = network(model_input)[0]
-            scores = torch.softmax(logits, dim=0)
+
+            # Rebalance logits with calibrated sensitivity
+            calibrated_logits = logits.clone()
+            for i, label in enumerate(_model_labels):
+                factor = EMOTION_SENSITIVITY.get(label, 1.0)
+                calibrated_logits[i] *= factor
+
+            scores = torch.softmax(calibrated_logits, dim=0)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Emotion inference failed: {exc}") from exc
 
@@ -180,6 +231,7 @@ def run_inference(image: Image.Image):
         "emotion": predicted_emotion,
         "emoji": EMOTION_EMOJIS[predicted_emotion],
         "confidence": probabilities[predicted_emotion],
+        "model": _model_name_display,
         "probabilities": probabilities,
     }
 
@@ -188,7 +240,7 @@ def read_root():
     return {
         "status": "online",
         "service": "Emotion Recognition AI Service",
-        "model": "MobileNetV3-Large",
+        "model": _model_name_display if _model is not None else "EfficientNet-B0 (Default)",
         "modelLoaded": _model is not None,
         "version": "1.0.0"
     }
@@ -219,3 +271,100 @@ def predict_emotion_base64(data: Base64ImageRequest):
         raise HTTPException(status_code=400, detail="Invalid Base64 image data") from exc
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"Base64 image processing failed: {exc}") from exc
+
+
+@app.post("/api/v1/predict-video")
+def predict_video(file: UploadFile = File(...)):
+    """Processes uploaded video file and extracts emotion timeline and summary"""
+    suffix = Path(file.filename or "video.mp4").suffix or ".mp4"
+    temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    try:
+        shutil.copyfileobj(file.file, temp_video)
+        temp_video.close()
+
+        cap = cv2.VideoCapture(temp_video.name)
+        if not cap.isOpened():
+            raise HTTPException(status_code=400, detail="Cannot read uploaded video file.")
+
+        fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+        duration_seconds = total_frames / fps if fps > 0 else 0
+
+        # Sample at 1 frame per second (step = round(fps))
+        sample_step = max(1, int(round(fps)))
+        # Limit max analysis points to 180 seconds (3 mins) to keep inference fast
+        max_samples = 180
+
+        timeline = []
+        emotion_counts = {emotion: 0 for emotion in EMOTIONS}
+        frame_idx = 0
+        analyzed_count = 0
+
+        while cap.isOpened() and analyzed_count < max_samples:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            if frame_idx % sample_step == 0:
+                current_sec = int(round(frame_idx / fps))
+                mins = current_sec // 60
+                secs = current_sec % 60
+                timestamp_str = f"{mins:02d}:{secs:02d}"
+
+                # OpenCV frame is BGR -> convert to RGB PIL Image
+                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                pil_image = Image.fromarray(rgb_frame)
+
+                try:
+                    res = run_inference(pil_image)
+                    pred_emotion = res["emotion"]
+                    emotion_counts[pred_emotion] += 1
+                    timeline.append({
+                        "second": current_sec,
+                        "timestamp": timestamp_str,
+                        "emotion": pred_emotion,
+                        "emoji": res["emoji"],
+                        "confidence": round(res["confidence"], 4),
+                        "probabilities": {k: round(v, 4) for k, v in res["probabilities"].items()}
+                    })
+                    analyzed_count += 1
+                except Exception:
+                    pass
+
+            frame_idx += 1
+
+        cap.release()
+
+        if not timeline:
+            raise HTTPException(status_code=400, detail="No valid frames could be analyzed in the video.")
+
+        # Aggregate summary percentages
+        total_analyzed = len(timeline)
+        distribution = {
+            emotion: round((count / total_analyzed) * 100, 1)
+            for emotion, count in emotion_counts.items()
+        }
+        dominant_emotion = max(emotion_counts, key=emotion_counts.get)
+
+        return {
+            "success": True,
+            "filename": file.filename,
+            "durationSeconds": round(duration_seconds, 1),
+            "sampledFrames": total_analyzed,
+            "dominantEmotion": dominant_emotion,
+            "emoji": EMOTION_EMOJIS[dominant_emotion],
+            "distribution": distribution,
+            "timeline": timeline,
+            "model": _model_name_display
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Video processing failed: {exc}") from exc
+    finally:
+        if os.path.exists(temp_video.name):
+            try:
+                os.remove(temp_video.name)
+            except OSError:
+                pass
+

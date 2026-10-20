@@ -8,7 +8,12 @@ from torch import nn
 from torch.optim import AdamW
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
-from torchvision.models import MobileNet_V3_Large_Weights, mobilenet_v3_large
+from torchvision.models import (
+    EfficientNet_B0_Weights,
+    MobileNet_V3_Large_Weights,
+    efficientnet_b0,
+    mobilenet_v3_large,
+)
 
 
 EMOTIONS = {"Angry", "Disgust", "Fear", "Happy", "Sad", "Surprise", "Neutral"}
@@ -20,7 +25,7 @@ BACKEND_DIR = Path(__file__).resolve().parent
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Fine-tune MobileNetV3-Large for seven-class facial emotion recognition."
+        description="Fine-tune EfficientNet-B0 or MobileNetV3 for facial emotion recognition."
     )
     parser.add_argument(
         "--data-dir",
@@ -28,14 +33,16 @@ def parse_args():
         default=BACKEND_DIR / "data" / "emotion",
         help="Folder containing train/ and val/ ImageFolder datasets.",
     )
+    parser.add_argument("--model-name", choices=("efficientnet_b0", "mobilenetv3"), default="efficientnet_b0")
     parser.add_argument("--warmup-epochs", type=int, default=5)
-    parser.add_argument("--finetune-epochs", type=int, default=25)
+    parser.add_argument("--finetune-epochs", type=int, default=30)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--image-size", type=int, choices=(128, 160, 224), default=DEFAULT_IMAGE_SIZE)
-    parser.add_argument("--unfreeze-last-layers", type=int, default=35)
-    parser.add_argument("--backbone-learning-rate", type=float, default=5e-5)
+    parser.add_argument("--unfreeze-last-layers", type=int, default=25)
+    parser.add_argument("--backbone-learning-rate", type=float, default=3.5e-5)
     parser.add_argument("--classifier-learning-rate", type=float, default=1e-4)
-    parser.add_argument("--patience", type=int, default=7)
+    parser.add_argument("--weight-decay", type=float, default=1.5e-2)
+    parser.add_argument("--patience", type=int, default=8)
     parser.add_argument(
         "--output",
         type=Path,
@@ -58,11 +65,11 @@ def make_datasets(data_dir: Path, image_size: int):
         transforms.Resize((image_size, image_size)),
         transforms.RandomHorizontalFlip(p=0.5),
         transforms.RandomRotation(degrees=15),
-        transforms.RandomAffine(degrees=0, translate=(0.1, 0.1)),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2),
+        transforms.RandomAffine(degrees=0, translate=(0.08, 0.08)),
+        transforms.ColorJitter(brightness=0.15, contrast=0.15),
         transforms.ToTensor(),
         transforms.Normalize(IMAGE_MEAN, IMAGE_STD),
-        transforms.RandomErasing(p=0.2, scale=(0.02, 0.1)),
+        transforms.RandomErasing(p=0.15, scale=(0.02, 0.1)),
     ])
     val_transform = transforms.Compose([
         transforms.Resize((image_size, image_size)),
@@ -152,9 +159,9 @@ def evaluate(model, loader, criterion, device):
 
 def train_phase(model, train_loader, val_loader, criterion, optimizer, device,
                 epochs, patience, phase_name, fine_tuning, scheduler_min_lr,
-                output, labels, image_size, best_accuracy, best_state):
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode="max", factor=0.5, patience=3, min_lr=scheduler_min_lr
+                output, labels, image_size, model_name, best_accuracy, best_state):
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=epochs, eta_min=scheduler_min_lr
     )
     phase_best = -1.0
     epochs_without_improvement = 0
@@ -164,7 +171,7 @@ def train_phase(model, train_loader, val_loader, criterion, optimizer, device,
             model, train_loader, criterion, optimizer, device, fine_tuning
         )
         val_loss, val_accuracy = evaluate(model, val_loader, criterion, device)
-        scheduler.step(val_accuracy)
+        scheduler.step()
         learning_rates = ", ".join(f"{group['lr']:.1e}" for group in optimizer.param_groups)
         print(
             f"{phase_name} {epoch}/{epochs} | "
@@ -180,6 +187,7 @@ def train_phase(model, train_loader, val_loader, criterion, optimizer, device,
                     "state_dict": best_state,
                     "labels": labels,
                     "image_size": image_size,
+                    "model_name": model_name,
                     "val_accuracy": val_accuracy,
                     "phase": phase_name,
                     "epoch": epoch,
@@ -227,15 +235,21 @@ def main():
         pin_memory=device.type == "cuda",
     )
 
-    model = mobilenet_v3_large(weights=MobileNet_V3_Large_Weights.IMAGENET1K_V2)
-    model.classifier[2].p = 0.5
-    model.classifier[-1] = nn.Linear(model.classifier[-1].in_features, len(labels))
+    if args.model_name == "efficientnet_b0":
+        model = efficientnet_b0(weights=EfficientNet_B0_Weights.DEFAULT)
+        model.classifier[0].p = 0.4
+        model.classifier[1] = nn.Linear(model.classifier[1].in_features, len(labels))
+    else:
+        model = mobilenet_v3_large(weights=MobileNet_V3_Large_Weights.IMAGENET1K_V2)
+        model.classifier[2].p = 0.5
+        model.classifier[-1] = nn.Linear(model.classifier[-1].in_features, len(labels))
+
     model.to(device)
     args.output.parent.mkdir(parents=True, exist_ok=True)
 
     class_counts = torch.bincount(torch.tensor(train_set.targets), minlength=len(labels)).float()
-    class_weights = (class_counts.sum() / (len(labels) * class_counts)).to(device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)
+    class_weights = torch.sqrt(class_counts.sum() / (len(labels) * class_counts)).to(device)
+    criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.03)
     best_accuracy = -1.0
     best_state = None
 
@@ -244,13 +258,13 @@ def main():
     for parameter in model.classifier.parameters():
         parameter.requires_grad = True
     warmup_optimizer = AdamW(
-        model.classifier.parameters(), lr=args.classifier_learning_rate, weight_decay=1e-2
+        model.classifier.parameters(), lr=args.classifier_learning_rate, weight_decay=args.weight_decay
     )
     print(f"Device: {device}; classes: {labels}; warm-up with frozen backbone")
     best_accuracy, best_state = train_phase(
         model, train_loader, val_loader, criterion, warmup_optimizer, device,
         args.warmup_epochs, args.patience, "warm-up", False, 1e-6,
-        args.output, labels, args.image_size, best_accuracy, best_state,
+        args.output, labels, args.image_size, args.model_name, best_accuracy, best_state,
     )
 
     layer_count = set_trainable_layers(model, args.unfreeze_last_layers)
@@ -262,7 +276,7 @@ def main():
             "lr": args.backbone_learning_rate,
         },
         {"params": model.classifier.parameters(), "lr": args.classifier_learning_rate},
-    ], weight_decay=1e-2)
+    ], weight_decay=args.weight_decay)
     print(
         f"Fine-tuning last {args.unfreeze_last_layers} of {layer_count} "
         "parameterized backbone layers"
@@ -270,7 +284,7 @@ def main():
     best_accuracy, best_state = train_phase(
         model, train_loader, val_loader, criterion, fine_tune_optimizer, device,
         args.finetune_epochs, args.patience, "fine-tune", True, 1e-6,
-        args.output, labels, args.image_size, best_accuracy, best_state,
+        args.output, labels, args.image_size, args.model_name, best_accuracy, best_state,
     )
 
     if best_state is not None:

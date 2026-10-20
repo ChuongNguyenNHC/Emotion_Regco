@@ -55,21 +55,30 @@ npm run dev
 ---
 
 ### 2️⃣ Khởi chạy AI Microservice (`backend-ai`)
+
+**🔹 A. Cài đặt Lần đầu tiên (Ngay sau khi clone code):**
 ```bash
 cd backend-ai
 
-# 1. Tạo và Kích hoạt Môi trường ảo Python (Virtualenv)
+# 1. Tạo môi trường ảo (Virtualenv)
 python -m venv venv
 
-# Trên Windows PowerShell:
+# 2. Kích hoạt môi trường (Trên Windows PowerShell)
+# ⚠️ Nếu gặp lỗi "cannot be loaded because running scripts is disabled", hãy chạy lệnh này 1 lần trước:
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
+
 .\venv\Scripts\Activate.ps1
-# Trên Linux/macOS:
-# source venv/bin/activate
+# (Trên Linux/macOS thì dùng: source venv/bin/activate)
 
-# 2. Cài đặt các thư viện AI & Web Server
+# 3. Tải và cài đặt các thư viện AI
 pip install -r requirements.txt
+```
 
-# 3. Khởi chạy FastAPI Server
+**🔹 B. Khởi chạy hằng ngày (Từ lần thứ 2 trở đi):**
+Mỗi khi mở máy lên làm việc, bạn không cần cài lại thư viện, chỉ cần bật môi trường và chạy server:
+```bash
+cd backend-ai
+.\venv\Scripts\Activate.ps1
 uvicorn main:app --reload --port 8000
 ```
 🌐 **Địa chỉ AI Service:** `http://localhost:8000/`  
@@ -89,15 +98,22 @@ uvicorn main:app --reload --port 8000
    SPRING_DATA_MONGODB_URI=mongodb+srv://<username>:<password>@cluster0.xxx.mongodb.net/emotion_db?retryWrites=true&w=majority
    AI_SERVICE_URL=http://localhost:8000
    SERVER_PORT=8080
+   GEMINI_API_KEY=<your-google-ai-studio-api-key>
+   GEMINI_MODEL=gemini-3.8-flash
    ```
+   Tạo API key tại [Google AI Studio](https://aistudio.google.com/app/apikey). Không đưa key vào frontend hoặc commit file `.env`.
    > ⚠️ **LƯU Ý:** File `.env` chứa mật khẩu đã được thêm vào `.gitignore`, tuyệt đối **KHÔNG** push file `.env` chứa mật khẩu thật lên GitHub public.
 
 #### 🏃 Chạy Spring Boot Application:
-* **Sử dụng VS Code / IntelliJ:** Mở folder `backend-java`, tìm file `src/main/java/com/emotion/BackendJavaApplication.java` và chọn **Run**.
 * **Sử dụng Terminal Command:**
   ```bash
   cd backend-java
-  ./mvnw spring-boot:run
+  
+  # Trên Windows:
+  .\mvnw.cmd spring-boot:run
+  
+  # Trên Mac/Linux:
+  # ./mvnw spring-boot:run
   ```
 🌐 **Địa chỉ Backend API:** `http://localhost:8080/api/v1/emotions/health`
 
@@ -109,5 +125,12 @@ uvicorn main:app --reload --port 8000
 | :--- | :--- | :--- | :--- |
 | `GET` | `/api/v1/emotions/health` | Kiểm tra trạng thái hệ thống | Spring Boot (8080) |
 | `POST` | `/api/v1/emotions/analyze-base64` | Nhận ảnh từ React, gọi AI & Lưu MongoDB | Spring Boot (8080) |
+| `POST` | `/api/v1/emotions/chat` | Chat Gemini, thống kê cảm xúc theo khoảng ngày hoặc phân tích video gửi kèm | Spring Boot (8080) |
+| `GET` | `/api/v1/emotions/chat/history?userId=...` | Liệt kê các hội thoại đã lưu của tài khoản | Spring Boot (8080) |
+| `GET` | `/api/v1/emotions/chat/history/{conversationId}?userId=...` | Mở lại một hội thoại đã lưu | Spring Boot (8080) |
 | `GET` | `/api/v1/emotions/history` | Truy vấn 20 lịch sử nhận diện mới nhất | Spring Boot (8080) |
 | `POST` | `/api/v1/predict-base64` | Xử lý AI Inference nhận diện cảm xúc | FastAPI (8000) |
+
+Khi video được phân tích cho tài khoản đã đăng nhập, MongoDB lưu tên tệp cùng `videoTimeline` dạng JSON trong bản ghi `emotion_records`. Mỗi phần tử timeline chứa timestamp, nhãn biểu cảm, độ tin cậy và xác suất theo từng nhãn; video gốc không được lưu trong MongoDB. Trợ lý dùng các mốc đã lấy mẫu để nêu loại biểu cảm tiêu cực và timestamp tương ứng, không nội suy thời gian giữa các frame.
+
+Các hội thoại chat thành công của người dùng đã đăng nhập được lưu trong MongoDB collection `chat_conversations`; người dùng có thể mở lại trong mục **Lịch sử** của chatbox. Chat của khách chưa đăng nhập không được lưu vào cơ sở dữ liệu.

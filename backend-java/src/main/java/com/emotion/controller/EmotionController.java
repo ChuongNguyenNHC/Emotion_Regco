@@ -2,11 +2,13 @@ package com.emotion.controller;
 
 import com.emotion.model.EmotionRecord;
 import com.emotion.repository.EmotionRecordRepository;
+import com.emotion.service.VideoAnalysisService;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.client.RestTemplate;
+import org.springframework.web.multipart.MultipartFile;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.ResponseEntity;
+import org.springframework.http.*;
 import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.HashMap;
@@ -22,6 +24,9 @@ public class EmotionController {
 
     @Autowired
     private EmotionRecordRepository emotionRecordRepository;
+
+    @Autowired
+    private VideoAnalysisService videoAnalysisService;
 
     private final RestTemplate restTemplate = new RestTemplate();
 
@@ -39,28 +44,38 @@ public class EmotionController {
     public ResponseEntity<?> proxyAnalyzeBase64(@RequestBody Map<String, Object> payload) {
         String targetUrl = aiServiceUrl + "/api/v1/predict-base64";
         try {
-            // 1. Call FastAPI AI Service
-            ResponseEntity<Map> aiResponse = restTemplate.postForEntity(targetUrl, payload, Map.class);
+
+            @SuppressWarnings("unchecked")
+            ResponseEntity<Map<String, Object>> aiResponse = (ResponseEntity<Map<String, Object>>) (ResponseEntity<?>) restTemplate.postForEntity(targetUrl, payload, Map.class);
             Map<String, Object> body = aiResponse.getBody();
 
             if (body != null && Boolean.TRUE.equals(body.get("success"))) {
-                // 2. Save prediction history into MongoDB Atlas
-                EmotionRecord record = new EmotionRecord();
-                record.setUserId((String) payload.getOrDefault("userId", "guest"));
-                record.setDominantEmotion((String) body.get("emotion"));
-                record.setEmoji((String) body.get("emoji"));
-                
-                Object confObj = body.get("confidence");
-                if (confObj instanceof Number) {
-                    record.setConfidence(((Number) confObj).doubleValue());
-                }
-                
-                if (body.get("probabilities") instanceof Map) {
-                    record.setProbabilities((Map<String, Double>) body.get("probabilities"));
-                }
-                record.setCreatedAt(LocalDateTime.now());
+                String userId = (String) payload.get("userId");
+                if (userId != null && !userId.trim().isEmpty() && !"guest".equalsIgnoreCase(userId.trim())) {
+                    EmotionRecord record = new EmotionRecord();
+                    record.setUserId(userId.trim());
+                    record.setDominantEmotion((String) body.get("emotion"));
+                    record.setEmoji((String) body.get("emoji"));
 
-                emotionRecordRepository.save(record);
+                    Object confObj = body.get("confidence");
+                    if (confObj instanceof Number) {
+                        record.setConfidence(((Number) confObj).doubleValue());
+                    }
+
+                    if (body.get("probabilities") instanceof Map<?, ?> probMap) {
+                        Map<String, Double> convertedMap = new HashMap<>();
+                        for (Map.Entry<?, ?> entry : probMap.entrySet()) {
+                            if (entry.getKey() != null && entry.getValue() instanceof Number num) {
+                                convertedMap.put(entry.getKey().toString(), num.doubleValue());
+                            }
+                        }
+                        record.setProbabilities(convertedMap);
+                    }
+                    record.setCreatedAt(LocalDateTime.now());
+                    record.setSourceType("REALTIME_CAMERA");
+
+                    emotionRecordRepository.save(record);
+                }
             }
 
             return ResponseEntity.ok(body);
@@ -72,9 +87,36 @@ public class EmotionController {
         }
     }
 
+    @PostMapping(value = "/analyze-video", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<?> proxyAnalyzeVideo(
+            @RequestParam("file") MultipartFile file,
+            @RequestParam(value = "userId", required = false, defaultValue = "guest") String userId,
+            @RequestParam(value = "videoId", required = false) String videoId) {
+        try {
+            return ResponseEntity.ok(videoAnalysisService.analyzeAndStore(file, userId, videoId));
+        } catch (Exception e) {
+            Map<String, Object> error = new HashMap<>();
+            error.put("success", false);
+            error.put("message", "Failed to analyze video: " + e.getMessage());
+            return ResponseEntity.status(500).body(error);
+        }
+    }
+
     @GetMapping("/history")
-    public ResponseEntity<List<EmotionRecord>> getRecentHistory() {
+    public ResponseEntity<List<EmotionRecord>> getRecentHistory(@RequestParam(required = false) String userId) {
+        if (userId != null && !userId.trim().isEmpty()) {
+            return ResponseEntity.ok(emotionRecordRepository.findByUserIdOrderByCreatedAtDesc(userId));
+        }
         return ResponseEntity.ok(emotionRecordRepository.findTop20ByOrderByCreatedAtDesc());
     }
-}
 
+    @DeleteMapping("/clear-guest")
+    public ResponseEntity<Map<String, Object>> clearGuestRecords() {
+        long deletedCount = emotionRecordRepository.deleteByUserId("guest");
+        Map<String, Object> res = new HashMap<>();
+        res.put("success", true);
+        res.put("deletedCount", deletedCount);
+        res.put("message", "Đã dọn sạch " + deletedCount + " bản ghi cũ của khách (guest)!");
+        return ResponseEntity.ok(res);
+    }
+}
