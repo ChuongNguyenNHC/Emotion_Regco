@@ -2,14 +2,13 @@ package com.emotion.controller;
 
 import com.emotion.model.EmotionRecord;
 import com.emotion.repository.EmotionRecordRepository;
+import com.emotion.service.VideoAnalysisService;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
-import org.springframework.util.LinkedMultiValueMap;
-import org.springframework.util.MultiValueMap;
 import java.time.LocalDateTime;
 import java.util.Map;
 import java.util.HashMap;
@@ -25,6 +24,9 @@ public class EmotionController {
 
     @Autowired
     private EmotionRecordRepository emotionRecordRepository;
+
+    @Autowired
+    private VideoAnalysisService videoAnalysisService;
 
     private final RestTemplate restTemplate = new RestTemplate();
 
@@ -88,57 +90,10 @@ public class EmotionController {
     @PostMapping(value = "/analyze-video", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<?> proxyAnalyzeVideo(
             @RequestParam("file") MultipartFile file,
-            @RequestParam(value = "userId", required = false, defaultValue = "guest") String userId) {
-        String targetUrl = aiServiceUrl + "/api/v1/predict-video";
+            @RequestParam(value = "userId", required = false, defaultValue = "guest") String userId,
+            @RequestParam(value = "videoId", required = false) String videoId) {
         try {
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.MULTIPART_FORM_DATA);
-
-            MultiValueMap<String, Object> bodyMap = new LinkedMultiValueMap<>();
-            org.springframework.core.io.ByteArrayResource fileResource = new org.springframework.core.io.ByteArrayResource(file.getBytes()) {
-                @Override
-                public String getFilename() {
-                    return file.getOriginalFilename() != null ? file.getOriginalFilename() : "video.mp4";
-                }
-            };
-            bodyMap.add("file", fileResource);
-
-            HttpEntity<MultiValueMap<String, Object>> requestEntity = new HttpEntity<>(bodyMap, headers);
-
-            @SuppressWarnings("unchecked")
-            ResponseEntity<Map<String, Object>> aiResponse = restTemplate.postForEntity(targetUrl, requestEntity, (Class<Map<String, Object>>)(Class<?>)Map.class);
-            Map<String, Object> body = aiResponse.getBody();
-
-            if (body != null && Boolean.TRUE.equals(body.get("success"))) {
-                if (userId != null && !userId.trim().isEmpty() && !"guest".equalsIgnoreCase(userId.trim())) {
-                    EmotionRecord record = new EmotionRecord();
-                    record.setUserId(userId.trim());
-                    record.setDominantEmotion((String) body.get("dominantEmotion"));
-                    record.setEmoji((String) body.get("emoji"));
-
-                    if (body.get("distribution") instanceof Map<?, ?> distMap) {
-                        Map<String, Double> convertedMap = new HashMap<>();
-                        for (Map.Entry<?, ?> entry : distMap.entrySet()) {
-                            if (entry.getKey() != null && entry.getValue() instanceof Number num) {
-                                convertedMap.put(entry.getKey().toString(), num.doubleValue() / 100.0);
-                            }
-                        }
-                        record.setProbabilities(convertedMap);
-
-                        // Set confidence as the proportion of the dominant emotion
-                        String domEmo = (String) body.get("dominantEmotion");
-                        if (domEmo != null && convertedMap.containsKey(domEmo)) {
-                            record.setConfidence(convertedMap.get(domEmo));
-                        }
-                    }
-                    record.setCreatedAt(LocalDateTime.now());
-                    record.setSourceType("UPLOADED_VIDEO");
-                    record.setVideoFileName(file.getOriginalFilename());
-                    emotionRecordRepository.save(record);
-                }
-            }
-
-            return ResponseEntity.ok(body);
+            return ResponseEntity.ok(videoAnalysisService.analyzeAndStore(file, userId, videoId));
         } catch (Exception e) {
             Map<String, Object> error = new HashMap<>();
             error.put("success", false);
@@ -165,4 +120,3 @@ public class EmotionController {
         return ResponseEntity.ok(res);
     }
 }
-

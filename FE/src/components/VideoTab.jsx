@@ -13,12 +13,13 @@ import {
 } from "lucide-react";
 import { API_BASE, getEmotionMeta, EMOTION_META } from "../constants/emotion";
 
-export default function VideoTab({ currentUser }) {
+export default function VideoTab({ currentUser, onVideoAnalyzed }) {
   const [selectedFile, setSelectedFile] = useState(null);
   const [videoPreviewUrl, setVideoPreviewUrl] = useState(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisResult, setAnalysisResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState(null);
+  const [noticeMsg, setNoticeMsg] = useState(null);
   const [filterEmotion, setFilterEmotion] = useState("ALL");
   const fileInputRef = useRef(null);
   const playerRef = useRef(null);
@@ -31,8 +32,10 @@ export default function VideoTab({ currentUser }) {
       return;
     }
     setErrorMsg(null);
+    setNoticeMsg(null);
     setAnalysisResult(null);
     setSelectedFile(file);
+    onVideoAnalyzed?.(null);
     if (videoPreviewUrl) {
       URL.revokeObjectURL(videoPreviewUrl);
     }
@@ -43,11 +46,14 @@ export default function VideoTab({ currentUser }) {
     if (!selectedFile) return;
     setAnalyzing(true);
     setErrorMsg(null);
+    setNoticeMsg(null);
 
     const formData = new FormData();
     formData.append("file", selectedFile);
     const userId = currentUser?.id || "guest";
+    const videoId = crypto.randomUUID();
     formData.append("userId", userId);
+    formData.append("videoId", videoId);
 
     try {
       let data = null;
@@ -79,6 +85,14 @@ export default function VideoTab({ currentUser }) {
       }
 
       setAnalysisResult(data);
+      onVideoAnalyzed?.(
+        data.videoId ? { videoId: data.videoId, filename: selectedFile.name } : null,
+      );
+      if (!data.videoId) {
+        setNoticeMsg(
+          "Video đã được phân tích nhưng chưa được lưu để chat truy vấn. Hãy kiểm tra backend Java rồi phân tích lại video.",
+        );
+      }
     } catch (err) {
       setErrorMsg(err.message || "Có lỗi xảy ra khi kết nối máy chủ AI.");
     } finally {
@@ -196,6 +210,11 @@ export default function VideoTab({ currentUser }) {
                   <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-xs text-rose-600 flex items-start gap-2">
                     <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
                     <span>{errorMsg}</span>
+                  </div>
+                )}
+                {noticeMsg && (
+                  <div role="status" className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-700">
+                    {noticeMsg}
                   </div>
                 )}
               </div>
