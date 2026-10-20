@@ -6,6 +6,7 @@ import {
   LogIn,
   LogOut,
   Video,
+  Sparkles,
   ChevronDown,
   ShieldCheck,
 } from "lucide-react";
@@ -15,12 +16,14 @@ import RealtimeTab from "./components/RealtimeTab";
 import VideoTab from "./components/VideoTab";
 import HistoryTab from "./components/HistoryTab";
 import DashboardTab from "./components/DashboardTab";
+import ChatTab from "./components/ChatTab";
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState("realtime"); // "realtime" | "video" | "dashboard" | "history"
+  const [activeTab, setActiveTab] = useState("realtime"); // "realtime" | "video" | "chat" | "dashboard" | "history"
   const [backendOk, setBackendOk] = useState(false);
   const [history, setHistory] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
+  const [selectedVideo, setSelectedVideo] = useState(null);
   const [view, setView] = useState("app"); // "app" | "auth"
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const menuRef = useRef(null);
@@ -75,9 +78,21 @@ export default function App() {
     localStorage.removeItem("emotion_auth_token");
     localStorage.removeItem("emotion_user");
     setCurrentUser(null);
+    setSelectedVideo(null);
     setIsUserMenuOpen(false);
     setActiveTab("realtime");
   };
+
+  const handleVideoSelection = (video) => {
+    setSelectedVideo(video ? {
+      ...video,
+      userId: currentUser?.id || "guest",
+    } : null);
+  };
+
+  const activeSelectedVideo = selectedVideo?.userId === (currentUser?.id || "guest")
+    ? selectedVideo
+    : null;
 
   if (view === "auth") {
     return (
@@ -95,6 +110,7 @@ export default function App() {
   const navItems = [
     { id: "realtime", label: "Camera Trực Tiếp", icon: Camera },
     { id: "video", label: "Nhận Diện Qua Video", icon: Video },
+    { id: "chat", label: "Trợ Lý AI", icon: Sparkles },
   ];
 
   return (
@@ -229,7 +245,17 @@ export default function App() {
       {/* Main Content */}
       <main className="flex-1 max-w-7xl w-full mx-auto p-6 z-10">
         {activeTab === "realtime" && <RealtimeTab backendOk={backendOk} currentUser={currentUser} />}
-        {activeTab === "video" && <VideoTab currentUser={currentUser} />}
+        {activeTab === "video" && (
+          <VideoTab currentUser={currentUser} onVideoAnalyzed={handleVideoSelection} />
+        )}
+        {activeTab === "chat" && (
+          <ChatTab
+            key={currentUser?.id || "guest"}
+            currentUser={currentUser}
+            selectedVideo={activeSelectedVideo}
+            onSelectVideo={handleVideoSelection}
+          />
+        )}
         {activeTab === "history" && <HistoryTab currentUser={currentUser} />}
         {activeTab === "dashboard" && <DashboardTab history={history} />}
       </main>
