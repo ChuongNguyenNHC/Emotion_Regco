@@ -2,6 +2,7 @@ import base64
 import binascii
 import io
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -368,3 +369,60 @@ def predict_video(file: UploadFile = File(...)):
             except OSError:
                 pass
 
+# Classification report from the latest training evaluation on FER-2013 test set
+CLASSIFICATION_REPORT = {
+    "classes": [
+        {"emotion": "Angry",    "emoji": "😠", "precision": 0.2495, "recall": 0.1284, "f1": 0.1695, "support": 958},
+        {"emotion": "Disgust",  "emoji": "🤢", "precision": 0.0000, "recall": 0.0000, "f1": 0.0000, "support": 111},
+        {"emotion": "Fear",     "emoji": "😨", "precision": 0.0000, "recall": 0.0000, "f1": 0.0000, "support": 1024},
+        {"emotion": "Happy",    "emoji": "😊", "precision": 0.3133, "recall": 0.6685, "f1": 0.4267, "support": 1774},
+        {"emotion": "Neutral",  "emoji": "😐", "precision": 0.2419, "recall": 0.2725, "f1": 0.2563, "support": 1233},
+        {"emotion": "Sad",      "emoji": "😢", "precision": 0.2620, "recall": 0.1748, "f1": 0.2097, "support": 1247},
+        {"emotion": "Surprise", "emoji": "😮", "precision": 0.3423, "recall": 0.2756, "f1": 0.3053, "support": 831},
+    ],
+    "accuracy": 0.2914,
+    "macro_avg":    {"precision": 0.2013, "recall": 0.2171, "f1": 0.1954},
+    "weighted_avg": {"precision": 0.2374, "recall": 0.2914, "f1": 0.2439},
+    "total_support": 7178,
+}
+
+
+def _parse_training_log() -> list[dict]:
+    """Parse train.log and return epoch history as list of dicts."""
+    log_path = Path(__file__).resolve().parent / "train.log"
+    if not log_path.exists():
+        return []
+
+    pattern = re.compile(
+        r'(?:warm-up|fine-tune)\s+(\d+)/\d+\s*\|\s*train loss ([\d.]+),\s*accuracy ([\d.]+)%\s*\|\s*val loss ([\d.]+),\s*accuracy ([\d.]+)%'
+    )
+
+    epochs = []
+    epoch_idx = 1
+    try:
+        content = log_path.read_text(encoding="utf-8", errors="replace")
+        for m in pattern.finditer(content):
+            epochs.append({
+                "epoch": epoch_idx,
+                "trainLoss": float(m.group(2)),
+                "trainAcc": float(m.group(3)),
+                "valLoss": float(m.group(4)),
+                "valAcc": float(m.group(5)),
+            })
+            epoch_idx += 1
+    except Exception:
+        pass
+    return epochs
+
+
+@app.get("/api/v1/model-metrics")
+def get_model_metrics():
+    """Return classification report metrics and training epoch history."""
+    training_history = _parse_training_log()
+    return {
+        "success": True,
+        "model": _model_name_display,
+        "classificationReport": CLASSIFICATION_REPORT,
+        "trainingHistory": training_history,
+        "bestValAccuracy": max((e["valAcc"] for e in training_history), default=None),
+    }

@@ -16,6 +16,7 @@ import {
   StatusDot,
   EmotionBar,
 } from "../constants/emotion";
+import ModelMetricsPanel from "./ModelMetricsPanel";
 
 export default function RealtimeTab({ backendOk, currentUser }) {
   const videoRef = useRef(null);
@@ -94,6 +95,7 @@ export default function RealtimeTab({ backendOk, currentUser }) {
   const meta = result ? getEmotionMeta(result.emotion) : null;
 
   return (
+    <div className="flex flex-col gap-6">
     <div className="flex flex-col lg:flex-row gap-6">
       {/* Video Container */}
       <div className="flex-1 bg-white border border-slate-200/80 rounded-3xl p-5 flex flex-col shadow-sm hover:shadow-md transition-all">
@@ -202,6 +204,11 @@ export default function RealtimeTab({ backendOk, currentUser }) {
           </div>
         )}
       </div>
+
+    </div>
+
+      {/* Model Metrics Panel - full width below the two columns */}
+      <ModelMetricsPanel />
     </div>
   );
 }
