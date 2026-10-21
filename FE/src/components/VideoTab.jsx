@@ -12,6 +12,7 @@ import {
   Filter,
 } from "lucide-react";
 import { API_BASE, getEmotionMeta, EMOTION_META } from "../constants/emotion";
+import ModelMetricsPanel from "./ModelMetricsPanel";
 
 export default function VideoTab({ currentUser, onVideoAnalyzed }) {
   const [selectedFile, setSelectedFile] = useState(null);
@@ -318,6 +319,9 @@ export default function VideoTab({ currentUser, onVideoAnalyzed }) {
           </div>
         )}
       </div>
+
+      {/* Model Metrics Panel - always visible below the video card */}
+      <ModelMetricsPanel defaultOpen={!!analysisResult} />
     </div>
   );
 }
