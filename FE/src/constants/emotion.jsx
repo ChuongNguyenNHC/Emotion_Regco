@@ -1,6 +1,7 @@
 import React from "react";
 
 export const API_BASE = "http://localhost:8080/api/v1/emotions";
+export const AI_DIRECT = "http://localhost:8000";
 export const CAPTURE_INTERVAL_MS = 1500;
 
 export const EMOTION_META = {

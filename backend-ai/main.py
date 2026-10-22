@@ -1,11 +1,17 @@
+import asyncio
 import base64
 import binascii
+from collections import deque
+from datetime import datetime, timezone
 import io
+import json
 import os
+import random
 import re
 import shutil
 import tempfile
 import threading
+import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -14,6 +20,7 @@ import numpy as np
 import torch
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel
 
@@ -53,6 +60,101 @@ _model_labels = EMOTIONS
 _model_name_display = "EfficientNet-B0"
 _model_lock = threading.Lock()
 
+# Real-time System Logging & Observability Engine
+LOG_MAX_HISTORY = 1000
+_system_logs = deque(maxlen=LOG_MAX_HISTORY)
+_log_id_counter = 0
+_log_subscribers: set[tuple[asyncio.Queue, asyncio.AbstractEventLoop]] = set()
+_log_lock = threading.Lock()
+_start_time = time.time()
+_stats_lock = threading.Lock()
+_system_stats = {
+    "total_requests": 0,
+    "total_errors": 0,
+    "latencies_ms": deque(maxlen=100),
+    "emotion_counts": {e: 0 for e in EMOTIONS},
+}
+
+
+def emit_system_log(
+    level: str,
+    module: str,
+    message: str,
+    details: dict | None = None,
+) -> dict:
+    """Record a system log entry and safely broadcast it to all active SSE subscribers."""
+    global _log_id_counter
+    with _log_lock:
+        _log_id_counter += 1
+        entry = {
+            "id": _log_id_counter,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "level": level.upper(),  # INFO, SUCCESS, WARN, ERROR
+            "module": module.upper(),  # SYSTEM, INFERENCE, DETECTION, VIDEO, MODEL, API
+            "message": message,
+            "details": details or {},
+        }
+        _system_logs.append(entry)
+
+    # Console logging
+    print(f"[{entry['level']}][{entry['module']}] {message}")
+
+    # Broadcast to SSE client queues safely across event loops
+    dead = []
+    for item in list(_log_subscribers):
+        try:
+            q, q_loop = item
+            if q_loop and q_loop.is_running():
+                q_loop.call_soon_threadsafe(q.put_nowait, entry)
+            else:
+                q.put_nowait(entry)
+        except Exception:
+            dead.append(item)
+    for d in dead:
+        _log_subscribers.discard(d)
+
+    return entry
+
+
+def get_system_stats() -> dict:
+    """Compile aggregated runtime performance metrics and hardware info."""
+    uptime = round(time.time() - _start_time, 1)
+    with _stats_lock:
+        reqs = _system_stats["total_requests"]
+        errs = _system_stats["total_errors"]
+        latencies = list(_system_stats["latencies_ms"])
+        emotion_counts = dict(_system_stats["emotion_counts"])
+
+    avg_latency = round(sum(latencies) / len(latencies), 1) if latencies else 0.0
+    p95_latency = round(float(np.percentile(latencies, 95)), 1) if latencies else 0.0
+    error_rate = round((errs / reqs * 100), 2) if reqs > 0 else 0.0
+
+    return {
+        "uptimeSeconds": uptime,
+        "totalRequests": reqs,
+        "totalErrors": errs,
+        "errorRatePct": error_rate,
+        "avgLatencyMs": avg_latency,
+        "p95LatencyMs": p95_latency,
+        "activeSubscribers": len(_log_subscribers),
+        "bufferedLogCount": len(_system_logs),
+        "modelLoaded": _model is not None,
+        "modelName": _model_name_display,
+        "device": "cuda" if torch.cuda.is_available() else "cpu",
+        "emotionCounts": emotion_counts,
+    }
+
+
+@app.on_event("startup")
+def on_startup():
+    emit_system_log("INFO", "SYSTEM", "EmotionAI Microservice engine initialized successfully on port 8000.")
+    emit_system_log("INFO", "MODEL", f"Configured model target: {_model_name_display} | Checkpoint: {MODEL_PATH.name}")
+    try:
+        load_model()
+    except Exception as exc:
+        emit_system_log("WARN", "MODEL", f"Initial model load deferred: {exc}")
+
+
 class Base64ImageRequest(BaseModel):
     image_base64: str
 
@@ -66,7 +168,7 @@ def get_face_detector():
     return detector
 
 
-def crop_largest_face(image: Image.Image) -> Image.Image:
+def crop_largest_face(image: Image.Image, emit_log: bool = True) -> Image.Image:
     try:
         if not hasattr(cv2, "CascadeClassifier"):
             return image
@@ -81,6 +183,8 @@ def crop_largest_face(image: Image.Image) -> Image.Image:
             minSize=(32, 32),
         )
         if len(faces) == 0:
+            if emit_log:
+                emit_system_log("WARN", "DETECTION", "No face detected by Haar cascade; using uncropped frame")
             return image
 
         x, y, width, height = max(faces, key=lambda face: face[2] * face[3])
@@ -97,8 +201,17 @@ def crop_largest_face(image: Image.Image) -> Image.Image:
         bottom = min(image.height, y + height + bottom_margin)
 
         cropped = image.crop((left, top, right, bottom))
+        if emit_log:
+            emit_system_log(
+                "INFO",
+                "DETECTION",
+                f"Face detected ({width}x{height} at x:{x}, y:{y}); cropped to {cropped.width}x{cropped.height}",
+                {"bbox": [int(x), int(y), int(width), int(height)], "croppedSize": [cropped.width, cropped.height]}
+            )
         return cropped
-    except Exception:
+    except Exception as exc:
+        if emit_log:
+            emit_system_log("WARN", "DETECTION", f"Face detection exception: {exc}; using full frame")
         return image
 
 
@@ -174,10 +287,17 @@ def load_model():
                 ),
             ])
             _model = network
+            emit_system_log(
+                "SUCCESS",
+                "MODEL",
+                f"Model weights loaded into memory ({_model_name_display}, input size: {image_size}x{image_size})",
+                {"model": _model_name_display, "classes": len(normalized_labels), "device": "cpu"}
+            )
             return _model
         except HTTPException:
             raise
         except Exception as exc:
+            emit_system_log("ERROR", "MODEL", f"Model loading failed: {exc}")
             raise HTTPException(
                 status_code=503,
                 detail=f"Could not load emotion model: {exc}",
@@ -203,9 +323,10 @@ EMOTION_SENSITIVITY = {
     "Surprise": 1.15,
 }
 
-def run_inference(image: Image.Image):
+def run_inference(image: Image.Image, emit_log: bool = True):
+    start_time_perf = time.perf_counter()
     network = load_model()
-    face_image = crop_largest_face(image)
+    face_image = crop_largest_face(image, emit_log=emit_log)
 
     try:
         with torch.inference_mode():
@@ -220,6 +341,10 @@ def run_inference(image: Image.Image):
 
             scores = torch.softmax(calibrated_logits, dim=0)
     except Exception as exc:
+        with _stats_lock:
+            _system_stats["total_errors"] += 1
+        if emit_log:
+            emit_system_log("ERROR", "INFERENCE", f"Emotion inference computation failed: {exc}")
         raise HTTPException(status_code=500, detail=f"Emotion inference failed: {exc}") from exc
 
     probabilities = {
@@ -227,12 +352,33 @@ def run_inference(image: Image.Image):
         for emotion in EMOTIONS
     }
     predicted_emotion = max(probabilities, key=probabilities.get)
+    latency_ms = round((time.perf_counter() - start_time_perf) * 1000, 2)
+
+    with _stats_lock:
+        _system_stats["total_requests"] += 1
+        _system_stats["latencies_ms"].append(latency_ms)
+        _system_stats["emotion_counts"][predicted_emotion] += 1
+
+    if emit_log:
+        emit_system_log(
+            "SUCCESS",
+            "INFERENCE",
+            f"Classified '{predicted_emotion}' ({probabilities[predicted_emotion] * 100:.1f}%) in {latency_ms}ms",
+            {
+                "emotion": predicted_emotion,
+                "confidence": round(probabilities[predicted_emotion], 4),
+                "latency_ms": latency_ms,
+                "model": _model_name_display,
+            }
+        )
+
     return {
         "success": True,
         "emotion": predicted_emotion,
         "emoji": EMOTION_EMOJIS[predicted_emotion],
         "confidence": probabilities[predicted_emotion],
         "model": _model_name_display,
+        "latency_ms": latency_ms,
         "probabilities": probabilities,
     }
 
@@ -279,17 +425,26 @@ def predict_video(file: UploadFile = File(...)):
     """Processes uploaded video file and extracts emotion timeline and summary"""
     suffix = Path(file.filename or "video.mp4").suffix or ".mp4"
     temp_video = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    start_video_perf = time.perf_counter()
     try:
         shutil.copyfileobj(file.file, temp_video)
         temp_video.close()
 
         cap = cv2.VideoCapture(temp_video.name)
         if not cap.isOpened():
+            emit_system_log("ERROR", "VIDEO", f"Cannot read uploaded video: {file.filename}")
             raise HTTPException(status_code=400, detail="Cannot read uploaded video file.")
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 25.0
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
         duration_seconds = total_frames / fps if fps > 0 else 0
+
+        emit_system_log(
+            "INFO",
+            "VIDEO",
+            f"Received video '{file.filename}' ({duration_seconds:.1f}s, {total_frames} frames @ {fps:.1f}fps)",
+            {"filename": file.filename, "durationSeconds": round(duration_seconds, 1), "totalFrames": total_frames, "fps": round(fps, 1)}
+        )
 
         # Sample at 1 frame per second (step = round(fps))
         sample_step = max(1, int(round(fps)))
@@ -317,7 +472,7 @@ def predict_video(file: UploadFile = File(...)):
                 pil_image = Image.fromarray(rgb_frame)
 
                 try:
-                    res = run_inference(pil_image)
+                    res = run_inference(pil_image, emit_log=False)
                     pred_emotion = res["emotion"]
                     emotion_counts[pred_emotion] += 1
                     timeline.append({
@@ -337,6 +492,7 @@ def predict_video(file: UploadFile = File(...)):
         cap.release()
 
         if not timeline:
+            emit_system_log("WARN", "VIDEO", f"No valid faces or frames analyzed in video {file.filename}")
             raise HTTPException(status_code=400, detail="No valid frames could be analyzed in the video.")
 
         # Aggregate summary percentages
@@ -346,6 +502,19 @@ def predict_video(file: UploadFile = File(...)):
             for emotion, count in emotion_counts.items()
         }
         dominant_emotion = max(emotion_counts, key=emotion_counts.get)
+        elapsed_video_ms = round((time.perf_counter() - start_video_perf) * 1000, 1)
+
+        emit_system_log(
+            "SUCCESS",
+            "VIDEO",
+            f"Video analysis completed in {elapsed_video_ms}ms: {total_analyzed} sampled points. Dominant emotion: '{dominant_emotion}' ({distribution[dominant_emotion]}%)",
+            {
+                "dominantEmotion": dominant_emotion,
+                "sampledFrames": total_analyzed,
+                "elapsedMs": elapsed_video_ms,
+                "distribution": distribution,
+            }
+        )
 
         return {
             "success": True,
@@ -361,6 +530,9 @@ def predict_video(file: UploadFile = File(...)):
     except HTTPException:
         raise
     except Exception as exc:
+        with _stats_lock:
+            _system_stats["total_errors"] += 1
+        emit_system_log("ERROR", "VIDEO", f"Video processing failed: {exc}")
         raise HTTPException(status_code=500, detail=f"Video processing failed: {exc}") from exc
     finally:
         if os.path.exists(temp_video.name):
@@ -369,7 +541,6 @@ def predict_video(file: UploadFile = File(...)):
             except OSError:
                 pass
 
-# Classification report from the latest training evaluation on FER-2013 test set
 CLASSIFICATION_REPORT = {
     "classes": [
         {"emotion": "Angry",    "emoji": "😠", "precision": 0.2495, "recall": 0.1284, "f1": 0.1695, "support": 958},
@@ -426,3 +597,83 @@ def get_model_metrics():
         "trainingHistory": training_history,
         "bestValAccuracy": max((e["valAcc"] for e in training_history), default=None),
     }
+
+@app.get("/api/v1/system-logs")
+def get_system_logs(limit: int = 150, level: str | None = None, module: str | None = None):
+    """Retrieve recent buffered system logs and runtime telemetry."""
+    with _log_lock:
+        logs = list(_system_logs)
+    if level and level.upper() != "ALL":
+        logs = [l for l in logs if l["level"] == level.upper()]
+    if module and module.upper() != "ALL":
+        logs = [l for l in logs if l["module"] == module.upper()]
+    if limit > 0:
+        logs = logs[-limit:]
+    return {
+        "success": True,
+        "logs": logs,
+        "stats": get_system_stats(),
+    }
+
+
+@app.get("/api/v1/system-logs/stream")
+async def stream_system_logs():
+    """Server-Sent Events (SSE) stream for real-time system logs and health heartbeats."""
+    queue = asyncio.Queue(maxsize=300)
+    loop = asyncio.get_running_loop()
+    sub_item = (queue, loop)
+    _log_subscribers.add(sub_item)
+
+    async def event_generator():
+        try:
+            welcome_data = json.dumps({
+                "type": "handshake",
+                "message": "Connected to EmotionAI System Log Stream",
+                "stats": get_system_stats(),
+            })
+            yield f"event: connected\ndata: {welcome_data}\n\n"
+
+            while True:
+                try:
+                    entry = await asyncio.wait_for(queue.get(), timeout=12.0)
+                    yield f"event: log\ndata: {json.dumps(entry)}\n\n"
+                except asyncio.TimeoutError:
+                    yield f": heartbeat {time.time()}\n\n"
+        except (asyncio.CancelledError, GeneratorExit):
+            pass
+        finally:
+            _log_subscribers.discard(sub_item)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.post("/api/v1/system-logs/clear")
+def clear_system_logs():
+    """Clear in-memory system log history."""
+    with _log_lock:
+        _system_logs.clear()
+    emit_system_log("INFO", "SYSTEM", "System log buffer has been cleared by operator.")
+    return {"success": True, "message": "Log buffer cleared", "stats": get_system_stats()}
+
+
+@app.post("/api/v1/system-logs/test")
+def test_system_logs():
+    """Generate sample logs for testing the live streaming UI."""
+    sample_emotions = ["Happy", "Surprise", "Neutral", "Sad", "Angry"]
+    emo = random.choice(sample_emotions)
+    lat = round(random.uniform(22.0, 58.0), 1)
+
+    emit_system_log("INFO", "DETECTION", "Frontal face detected: 142x142 px, confidence=0.98", {"bbox": [120, 80, 142, 142]})
+    emit_system_log("SUCCESS", "INFERENCE", f"Inference completed in {lat}ms: {emo} ({random.randint(82, 98)}%)", {"emotion": emo, "latency_ms": lat})
+    if random.random() < 0.35:
+        emit_system_log("WARN", "SYSTEM", "Frame buffer running slightly behind real-time (dropped 1 frame)", {"dropped": 1})
+    return {"success": True, "message": "Test logs emitted", "stats": get_system_stats()}
+

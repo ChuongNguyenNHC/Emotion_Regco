@@ -43,6 +43,8 @@ export default function HistoryTab({ currentUser }) {
     }
   }, [currentUser]);
 
+  const [activeSource, setActiveSource] = useState("camera"); // "camera" | "video"
+
   useEffect(() => {
     fetchHistory();
   }, [fetchHistory]);
@@ -58,8 +60,6 @@ export default function HistoryTab({ currentUser }) {
       </div>
     );
   }
-
-  const [activeSource, setActiveSource] = useState("camera"); // "camera" | "video"
 
   const filteredHistory = history.filter((item) => {
     if (activeSource === "video") {

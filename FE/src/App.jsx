@@ -9,6 +9,7 @@ import {
   Sparkles,
   ChevronDown,
   ShieldCheck,
+  Terminal,
 } from "lucide-react";
 import AuthPage from "./AuthPage";
 import { API_BASE } from "./constants/emotion";
@@ -17,9 +18,12 @@ import VideoTab from "./components/VideoTab";
 import HistoryTab from "./components/HistoryTab";
 import DashboardTab from "./components/DashboardTab";
 import ChatTab from "./components/ChatTab";
+import SystemLogsTab from "./components/SystemLogsTab";
+import SystemLogDrawer from "./components/SystemLogDrawer";
+import { SystemLogProvider, useSystemLog } from "./context/SystemLogContext";
 
-export default function App() {
-  const [activeTab, setActiveTab] = useState("realtime"); // "realtime" | "video" | "chat" | "dashboard" | "history"
+function AppContent() {
+  const [activeTab, setActiveTab] = useState("realtime"); // "realtime" | "video" | "chat" | "logs" | "dashboard" | "history"
   const [backendOk, setBackendOk] = useState(false);
   const [history, setHistory] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
@@ -27,6 +31,7 @@ export default function App() {
   const [view, setView] = useState("app"); // "app" | "auth"
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const menuRef = useRef(null);
+  const { isConnected } = useSystemLog();
 
   // Close dropdown on click outside
   useEffect(() => {
@@ -106,11 +111,12 @@ export default function App() {
     );
   }
 
-  // Navbar chính: Camera Trực Tiếp và Nhận diện qua Video
+  // Navbar chính: Camera Trực Tiếp, Nhận diện qua Video, Trợ Lý AI, và Nhật Ký Hệ Thống
   const navItems = [
     { id: "realtime", label: "Camera Trực Tiếp", icon: Camera },
     { id: "video", label: "Nhận Diện Qua Video", icon: Video },
     { id: "chat", label: "Trợ Lý AI", icon: Sparkles },
+    { id: "logs", label: "Nhật Ký Hệ Thống", icon: Terminal, badge: isConnected },
   ];
 
   return (
@@ -146,7 +152,7 @@ export default function App() {
         {/* Center: Main Navigation Items */}
         <div className="flex justify-center">
           <nav className="flex items-center gap-1 bg-white/80 p-1 rounded-xl border border-slate-200 shadow-2xs">
-            {navItems.map(({ id, label, icon: Icon }) => (
+            {navItems.map(({ id, label, icon: Icon, badge }) => (
               <button
                 key={id}
                 onClick={() => setActiveTab(id)}
@@ -156,7 +162,14 @@ export default function App() {
                     : "text-slate-600 hover:text-slate-900 hover:bg-slate-100/70"
                 }`}
               >
-                <Icon className="w-3.5 h-3.5" /> {label}
+                <Icon className="w-3.5 h-3.5" />
+                <span>{label}</span>
+                {badge && (
+                  <span className="relative flex h-1.5 w-1.5 ml-0.5">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-emerald-500" />
+                  </span>
+                )}
               </button>
             ))}
           </nav>
@@ -217,6 +230,21 @@ export default function App() {
                       <History className="w-4 h-4 text-indigo-600" />
                       <span>Lịch Sử Quét</span>
                     </button>
+
+                    <button
+                      onClick={() => {
+                        setActiveTab("logs");
+                        setIsUserMenuOpen(false);
+                      }}
+                      className={`w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-medium transition-colors text-left cursor-pointer ${
+                        activeTab === "logs"
+                          ? "bg-indigo-50 text-indigo-600 font-semibold"
+                          : "text-slate-700 hover:bg-slate-50"
+                      }`}
+                    >
+                      <Terminal className="w-4 h-4 text-indigo-600" />
+                      <span>Nhật Ký Hệ Thống</span>
+                    </button>
                   </div>
 
                   <div className="pt-1">
@@ -258,6 +286,7 @@ export default function App() {
         )}
         {activeTab === "history" && <HistoryTab currentUser={currentUser} />}
         {activeTab === "dashboard" && <DashboardTab history={history} />}
+        {activeTab === "logs" && <SystemLogsTab />}
       </main>
 
       {/* Footer (Màu Bạc Xanh Nhẹ / Soft Ice-Silver - Đồng bộ với Header) */}
@@ -271,6 +300,17 @@ export default function App() {
           <p className="text-[11px] text-slate-500">© 2026 EmotionAI Studio · Đồ án môn Công nghệ Phần mềm Nâng cao</p>
         </div>
       </footer>
+
+      {/* Floating System Log Mini Console Drawer */}
+      <SystemLogDrawer onOpenFullTab={() => setActiveTab("logs")} />
     </div>
+  );
+}
+
+export default function App() {
+  return (
+    <SystemLogProvider>
+      <AppContent />
+    </SystemLogProvider>
   );
 }
