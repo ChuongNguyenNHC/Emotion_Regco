@@ -105,9 +105,19 @@ public class EmotionController {
     @GetMapping("/history")
     public ResponseEntity<List<EmotionRecord>> getRecentHistory(@RequestParam(required = false) String userId) {
         if (userId != null && !userId.trim().isEmpty()) {
-            return ResponseEntity.ok(emotionRecordRepository.findByUserIdOrderByCreatedAtDesc(userId));
+            return ResponseEntity.ok(emotionRecordRepository.findSummaryByUserId(userId));
         }
-        return ResponseEntity.ok(emotionRecordRepository.findTop20ByOrderByCreatedAtDesc());
+        return ResponseEntity.ok(emotionRecordRepository.findTop20Summary());
+    }
+
+    @GetMapping("/history/{id}")
+    public ResponseEntity<EmotionRecord> getRecordDetail(@PathVariable String id) {
+        if (id == null || id.isBlank()) {
+            return ResponseEntity.badRequest().build();
+        }
+        return emotionRecordRepository.findById(java.util.Objects.requireNonNull(id))
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
     }
 
     @DeleteMapping("/clear-guest")

@@ -16,6 +16,11 @@ import {
   BarChart3,
   TrendingUp,
   PieChart,
+  ChevronDown,
+  ChevronUp,
+  Film,
+  Sparkles,
+  Play,
 } from "lucide-react";
 import { API_BASE, getEmotionMeta, formatTime, EMOTION_META } from "../constants/emotion";
 
@@ -25,6 +30,11 @@ export default function HistoryTab({ currentUser }) {
   const [error, setError] = useState(null);
   const [currentPage, setCurrentPage] = useState(1);
   const [activeSource, setActiveSource] = useState("all"); // "all" | "camera" | "video"
+  
+  // State quản lý xem chi tiết timeline của video
+  const [expandedRecordId, setExpandedRecordId] = useState(null);
+  const [timelineDetails, setTimelineDetails] = useState({}); // { [recordId]: { loading: boolean, data: Array, error: string } }
+
   const pageSize = 15;
 
   const fetchHistory = useCallback(async () => {
@@ -53,6 +63,44 @@ export default function HistoryTab({ currentUser }) {
     fetchHistory();
   }, [fetchHistory]);
 
+  // Lazy fetch timeline khi người dùng bấm xem chi tiết video
+  const toggleExpandTimeline = async (recordId) => {
+    if (expandedRecordId === recordId) {
+      setExpandedRecordId(null);
+      return;
+    }
+    setExpandedRecordId(recordId);
+
+    // Nếu đã tải timeline cho record này rồi thì không tải lại
+    if (timelineDetails[recordId]?.data) return;
+
+    setTimelineDetails((prev) => ({
+      ...prev,
+      [recordId]: { loading: true, data: null, error: null },
+    }));
+
+    try {
+      const res = await fetch(`${API_BASE}/history/${recordId}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const detail = await res.json();
+      setTimelineDetails((prev) => ({
+        ...prev,
+        [recordId]: {
+          loading: false,
+          data: detail.videoTimeline || [],
+          probabilities: detail.probabilities || null,
+          videoFileName: detail.videoFileName,
+          error: null,
+        },
+      }));
+    } catch (err) {
+      setTimelineDetails((prev) => ({
+        ...prev,
+        [recordId]: { loading: false, data: null, error: err.message },
+      }));
+    }
+  };
+
   // Lọc lịch sử theo nguồn
   const filteredHistory = useMemo(() => {
     if (activeSource === "video") {
@@ -64,7 +112,7 @@ export default function HistoryTab({ currentUser }) {
     return history;
   }, [history, activeSource]);
 
-  // Tính toán thống kê từ lịch sử (dựa trên bộ lọc hoặc toàn bộ lịch sử)
+  // Tính toán thống kê từ lịch sử
   const stats = useMemo(() => {
     const total = filteredHistory.length;
     const counts = filteredHistory.reduce((acc, item) => {
@@ -77,7 +125,6 @@ export default function HistoryTab({ currentUser }) {
     const topEmotion = sortedEmotions[0];
     const topEmotionMeta = topEmotion ? getEmotionMeta(topEmotion[0]) : null;
 
-    // Tính độ tin cậy trung bình
     let sumConfidence = 0;
     let confidenceCount = 0;
     filteredHistory.forEach((item) => {
@@ -193,7 +240,7 @@ export default function HistoryTab({ currentUser }) {
           ))}
         </div>
 
-        {/* Phân bố các cảm xúc (Progress bars) */}
+        {/* Phân bố các cảm xúc */}
         {stats.total > 0 && (
           <div className="mt-6 pt-5 border-t border-slate-100">
             <h3 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-3 flex items-center gap-1.5">
@@ -302,45 +349,142 @@ export default function HistoryTab({ currentUser }) {
             <div className="flex flex-col divide-y divide-slate-100">
               {paginatedHistory.map((item, idx) => {
                 const meta = getEmotionMeta(item.dominantEmotion);
+                const isVideo = item.sourceType === "UPLOADED_VIDEO";
+                const isExpanded = expandedRecordId === item.id;
+                const detail = item.id ? timelineDetails[item.id] : null;
+
                 return (
-                  <div
-                    key={item.id || idx}
-                    className="flex items-center gap-4 py-3 hover:bg-slate-50/80 px-2 rounded-2xl transition"
-                  >
-                    <div
-                      className={`w-11 h-11 rounded-2xl flex items-center justify-center text-xl shadow-xs border ${meta.border} ${meta.bgLight} shrink-0`}
-                    >
-                      {meta.emoji}
+                  <div key={item.id || idx} className="py-3 px-2 rounded-2xl transition hover:bg-slate-50/60">
+                    <div className="flex items-center gap-4">
+                      <div
+                        className={`w-11 h-11 rounded-2xl flex items-center justify-center text-xl shadow-xs border ${meta.border} ${meta.bgLight} shrink-0`}
+                      >
+                        {meta.emoji}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <p className="text-xs sm:text-sm font-bold text-slate-800">
+                            {meta.label}{" "}
+                            <span className="text-[11px] text-slate-400 font-normal">({item.dominantEmotion})</span>
+                          </p>
+                          {isVideo ? (
+                            <span className="text-[10px] bg-purple-50 text-purple-700 font-semibold px-2 py-0.5 rounded-full border border-purple-200 flex items-center gap-1">
+                              <FileVideo className="w-3 h-3 text-purple-600" /> Video
+                            </span>
+                          ) : (
+                            <span className="text-[10px] bg-sky-50 text-sky-700 font-semibold px-2 py-0.5 rounded-full border border-sky-200 flex items-center gap-1">
+                              <Camera className="w-3 h-3 text-sky-600" /> Trực tiếp
+                            </span>
+                          )}
+
+                          {/* Hiển thị tên file video nếu có */}
+                          {isVideo && (item.videoFileName || item.filename) && (
+                            <span className="text-[11px] text-slate-500 font-mono bg-slate-100 px-2 py-0.5 rounded-md truncate max-w-[200px] sm:max-w-xs flex items-center gap-1 border border-slate-200">
+                              <Film className="w-3 h-3 text-slate-400 shrink-0" />
+                              {item.videoFileName || item.filename}
+                            </span>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-3 sm:gap-4 mt-1 text-[11px] text-slate-500">
+                          <span className="flex items-center gap-1 font-semibold text-emerald-600">
+                            <Activity className="w-3 h-3" />
+                            {(() => {
+                              const conf = item.confidence ?? item.probabilities?.[item.dominantEmotion];
+                              return conf != null ? `${(conf * 100).toFixed(1)}%` : "N/A";
+                            })()}
+                          </span>
+                          <span className="flex items-center gap-1">
+                            <Clock className="w-3 h-3 text-slate-400" /> {formatTime(item.createdAt)}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Nút xem chi tiết Timeline nếu là Video */}
+                      {isVideo && item.id && (
+                        <button
+                          type="button"
+                          onClick={() => toggleExpandTimeline(item.id)}
+                          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer shrink-0 ${
+                            isExpanded
+                              ? "bg-indigo-600 text-white border-indigo-600 shadow-xs"
+                              : "bg-white text-indigo-600 border-indigo-200 hover:bg-indigo-50"
+                          }`}
+                        >
+                          <Play className={`w-3 h-3 ${isExpanded ? "fill-white" : "fill-indigo-600"}`} />
+                          <span className="hidden sm:inline">Chi tiết</span>
+                          {isExpanded ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+                        </button>
+                      )}
                     </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <p className="text-xs sm:text-sm font-bold text-slate-800">
-                          {meta.label}{" "}
-                          <span className="text-[11px] text-slate-400 font-normal">({item.dominantEmotion})</span>
-                        </p>
-                        {item.sourceType === "UPLOADED_VIDEO" ? (
-                          <span className="text-[10px] bg-purple-50 text-purple-700 font-semibold px-2 py-0.5 rounded-full border border-purple-200 flex items-center gap-1">
-                            <FileVideo className="w-3 h-3 text-purple-600" /> Video
-                          </span>
-                        ) : (
-                          <span className="text-[10px] bg-sky-50 text-sky-700 font-semibold px-2 py-0.5 rounded-full border border-sky-200 flex items-center gap-1">
-                            <Camera className="w-3 h-3 text-sky-600" /> Trực tiếp
-                          </span>
+
+                    {/* Vùng mở rộng xem Timeline chi tiết của Video */}
+                    {isVideo && isExpanded && (
+                      <div className="mt-3.5 pt-3.5 border-t border-slate-100 pl-2 sm:pl-14">
+                        {detail?.loading && (
+                          <div className="py-4 text-xs text-slate-500 flex items-center gap-2">
+                            <RefreshCw className="w-4 h-4 animate-spin text-indigo-600" />
+                            Đang tải biểu đồ diễn biến từng frame của video...
+                          </div>
+                        )}
+
+                        {detail?.error && (
+                          <div className="py-2 text-xs text-rose-500 flex items-center gap-1.5">
+                            <AlertCircle className="w-4 h-4" />
+                            Không thể tải chi tiết: {detail.error}
+                          </div>
+                        )}
+
+                        {detail && !detail.loading && (!detail.data || detail.data.length === 0) && (
+                          <p className="text-xs text-slate-400 py-2">
+                            Video này không ghi nhận timeline từng frame.
+                          </p>
+                        )}
+
+                        {detail?.data && detail.data.length > 0 && (
+                          <div className="bg-slate-50/90 rounded-2xl p-4 border border-slate-200/70">
+                            <div className="flex items-center justify-between mb-3 pb-2 border-b border-slate-200/50">
+                              <div className="flex items-center gap-1.5">
+                                <Sparkles className="w-3.5 h-3.5 text-indigo-600" />
+                                <span className="text-xs font-bold text-slate-800">
+                                  Timeline Cảm Xúc ({detail.data.length} mốc lấy mẫu)
+                                </span>
+                              </div>
+                              <span className="text-[11px] text-slate-400">
+                                Nhấp chọn mốc để xem chi tiết
+                              </span>
+                            </div>
+
+                            {/* Horizontal timeline chip list */}
+                            <div className="flex items-center gap-2 overflow-x-auto pb-2 scrollbar-thin">
+                              {detail.data.map((frame, fIdx) => {
+                                const frameMeta = getEmotionMeta(frame.emotion);
+                                const confPercent = frame.confidence != null ? Math.round(frame.confidence * 100) : null;
+                                return (
+                                  <div
+                                    key={fIdx}
+                                    className="flex flex-col items-center bg-white px-3 py-2 rounded-xl border border-slate-200/80 shadow-xs shrink-0 hover:border-indigo-300 transition"
+                                  >
+                                    <span className="text-[10px] font-mono font-bold text-slate-400 mb-1">
+                                      {typeof frame.timestamp === "number" ? `${frame.timestamp}s` : frame.timestamp}
+                                    </span>
+                                    <span className="text-lg mb-0.5">{frameMeta.emoji}</span>
+                                    <span className="text-[11px] font-bold text-slate-700">
+                                      {frameMeta.label}
+                                    </span>
+                                    {confPercent != null && (
+                                      <span className="text-[10px] font-semibold text-emerald-600 font-mono">
+                                        {confPercent}%
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
                         )}
                       </div>
-                      <div className="flex flex-wrap items-center gap-3 sm:gap-4 mt-1 text-[11px] text-slate-500">
-                        <span className="flex items-center gap-1 font-semibold text-emerald-600">
-                          <Activity className="w-3 h-3" />
-                          {(() => {
-                            const conf = item.confidence ?? item.probabilities?.[item.dominantEmotion];
-                            return conf != null ? `${(conf * 100).toFixed(1)}%` : "N/A";
-                          })()}
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <Clock className="w-3 h-3 text-slate-400" /> {formatTime(item.createdAt)}
-                        </span>
-                      </div>
-                    </div>
+                    )}
                   </div>
                 );
               })}
