@@ -9,6 +9,12 @@ import java.time.LocalDateTime;
 
 @Repository
 public interface EmotionRecordRepository extends MongoRepository<EmotionRecord, String> {
+    @org.springframework.data.mongodb.repository.Query(value = "{}", fields = "{ 'videoTimeline': 0 }", sort = "{ 'createdAt': -1 }")
+    List<EmotionRecord> findTop20Summary();
+
+    @org.springframework.data.mongodb.repository.Query(value = "{ 'userId': ?0 }", fields = "{ 'videoTimeline': 0 }", sort = "{ 'createdAt': -1 }")
+    List<EmotionRecord> findSummaryByUserId(String userId);
+
     List<EmotionRecord> findTop20ByOrderByCreatedAtDesc();
     List<EmotionRecord> findByUserIdOrderByCreatedAtDesc(String userId);
     Optional<EmotionRecord> findByUserIdAndVideoId(String userId, String videoId);
