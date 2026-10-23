@@ -161,7 +161,7 @@ public class EmotionChatService {
 
         for (EmotionRecord record : records) {
             String emotion = record.getDominantEmotion() == null ? "Unknown" : record.getDominantEmotion();
-            emotionCounts.merge(emotion, 1, Integer::sum);
+            emotionCounts.merge(emotion, 1, (a, b) -> a + b);
             if (NEGATIVE_EMOTIONS.contains(emotion.toLowerCase())) {
                 negativeCount++;
             }
@@ -172,8 +172,8 @@ public class EmotionChatService {
                             .findFirst()
                             .orElse(null);
                     if (canonicalLabel != null && probability != null && Double.isFinite(probability)) {
-                        probabilitySums.merge(canonicalLabel, probability, Double::sum);
-                        probabilitySampleCounts.merge(canonicalLabel, 1, Integer::sum);
+                        probabilitySums.merge(canonicalLabel, probability, (a, b) -> a + b);
+                        probabilitySampleCounts.merge(canonicalLabel, 1, (a, b) -> a + b);
                     }
                 });
             }
@@ -225,7 +225,7 @@ public class EmotionChatService {
                             && NEGATIVE_EMOTIONS.contains(emotion.toLowerCase())) {
                         negativeMoments.add(moment);
                         String emotionKey = emotion.toLowerCase();
-                        negativeEmotionCounts.merge(emotionKey, 1, Integer::sum);
+                        negativeEmotionCounts.merge(emotionKey, 1, (a, b) -> a + b);
                     }
                 }
             }
