@@ -15,13 +15,11 @@ import { API_BASE } from "./constants/emotion";
 import RealtimeTab from "./components/RealtimeTab";
 import VideoTab from "./components/VideoTab";
 import HistoryTab from "./components/HistoryTab";
-import DashboardTab from "./components/DashboardTab";
 import ChatTab from "./components/ChatTab";
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState("realtime"); // "realtime" | "video" | "chat" | "dashboard" | "history"
+  const [activeTab, setActiveTab] = useState("realtime"); // "realtime" | "video" | "chat" | "history"
   const [backendOk, setBackendOk] = useState(false);
-  const [history, setHistory] = useState([]);
   const [currentUser, setCurrentUser] = useState(null);
   const [selectedVideo, setSelectedVideo] = useState(null);
   const [view, setView] = useState("app"); // "app" | "auth"
@@ -65,14 +63,6 @@ export default function App() {
     return () => clearInterval(id);
   }, []);
 
-  useEffect(() => {
-    if (activeTab === "dashboard") {
-      fetch(`${API_BASE}/history`)
-        .then(r => r.json())
-        .then(setHistory)
-        .catch(() => { });
-    }
-  }, [activeTab]);
 
   const handleLogout = () => {
     localStorage.removeItem("emotion_auth_token");
@@ -190,21 +180,6 @@ export default function App() {
                   <div className="py-1">
                     <button
                       onClick={() => {
-                        setActiveTab("dashboard");
-                        setIsUserMenuOpen(false);
-                      }}
-                      className={`w-full flex items-center gap-2.5 px-3.5 py-2 text-xs font-medium transition-colors text-left cursor-pointer ${
-                        activeTab === "dashboard"
-                          ? "bg-indigo-50 text-indigo-600 font-semibold"
-                          : "text-slate-700 hover:bg-slate-50"
-                      }`}
-                    >
-                      <LayoutDashboard className="w-4 h-4 text-indigo-600" />
-                      <span>Thống Kê Cảm Xúc</span>
-                    </button>
-
-                    <button
-                      onClick={() => {
                         setActiveTab("history");
                         setIsUserMenuOpen(false);
                       }}
@@ -214,8 +189,8 @@ export default function App() {
                           : "text-slate-700 hover:bg-slate-50"
                       }`}
                     >
-                      <History className="w-4 h-4 text-indigo-600" />
-                      <span>Lịch Sử Quét</span>
+                      <LayoutDashboard className="w-4 h-4 text-indigo-600" />
+                      <span>Thống Kê & Lịch Sử</span>
                     </button>
                   </div>
 
@@ -257,7 +232,6 @@ export default function App() {
           />
         )}
         {activeTab === "history" && <HistoryTab currentUser={currentUser} />}
-        {activeTab === "dashboard" && <DashboardTab history={history} />}
       </main>
 
       {/* Footer (Màu Bạc Xanh Nhẹ / Soft Ice-Silver - Đồng bộ với Header) */}
