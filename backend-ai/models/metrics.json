@@ -1,0 +1,72 @@
+{
+  "classes": [
+    {
+      "emotion": "Angry",
+      "emoji": "😠",
+      "precision": 0.529,
+      "recall": 0.572,
+      "f1": 0.5496,
+      "support": 958
+    },
+    {
+      "emotion": "Disgust",
+      "emoji": "🤢",
+      "precision": 0.4846,
+      "recall": 0.5676,
+      "f1": 0.5228,
+      "support": 111
+    },
+    {
+      "emotion": "Fear",
+      "emoji": "😨",
+      "precision": 0.5322,
+      "recall": 0.3711,
+      "f1": 0.4373,
+      "support": 1024
+    },
+    {
+      "emotion": "Happy",
+      "emoji": "😊",
+      "precision": 0.8209,
+      "recall": 0.8501,
+      "f1": 0.8352,
+      "support": 1774
+    },
+    {
+      "emotion": "Neutral",
+      "emoji": "😐",
+      "precision": 0.5736,
+      "recall": 0.6448,
+      "f1": 0.6071,
+      "support": 1233
+    },
+    {
+      "emotion": "Sad",
+      "emoji": "😢",
+      "precision": 0.5414,
+      "recall": 0.514,
+      "f1": 0.5274,
+      "support": 1247
+    },
+    {
+      "emotion": "Surprise",
+      "emoji": "😮",
+      "precision": 0.7363,
+      "recall": 0.7894,
+      "f1": 0.7619,
+      "support": 831
+    }
+  ],
+  "accuracy": 0.6396,
+  "macro_avg": {
+    "precision": 0.6026,
+    "recall": 0.6156,
+    "f1": 0.6059
+  },
+  "weighted_avg": {
+    "precision": 0.6347,
+    "recall": 0.6396,
+    "f1": 0.6344
+  },
+  "total_support": 7178
+}

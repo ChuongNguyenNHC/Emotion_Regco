@@ -30,7 +30,6 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# Allow CORS for React Frontend & Spring Boot Backend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -58,9 +57,9 @@ _model = None
 _preprocess = None
 _model_labels = EMOTIONS
 _model_name_display = "EfficientNet-B0"
+_model_mtime = 0.0
 _model_lock = threading.Lock()
 
-# Real-time System Logging & Observability Engine
 LOG_MAX_HISTORY = 1000
 _system_logs = deque(maxlen=LOG_MAX_HISTORY)
 _log_id_counter = 0
@@ -89,17 +88,15 @@ def emit_system_log(
         entry = {
             "id": _log_id_counter,
             "timestamp": datetime.now(timezone.utc).isoformat(),
-            "level": level.upper(),  # INFO, SUCCESS, WARN, ERROR
-            "module": module.upper(),  # SYSTEM, INFERENCE, DETECTION, VIDEO, MODEL, API
+            "level": level.upper(),
+            "module": module.upper(),
             "message": message,
             "details": details or {},
         }
         _system_logs.append(entry)
 
-    # Console logging
     print(f"[{entry['level']}][{entry['module']}] {message}")
 
-    # Broadcast to SSE client queues safely across event loops
     dead = []
     for item in list(_log_subscribers):
         try:
@@ -173,7 +170,6 @@ def crop_largest_face(image: Image.Image, emit_log: bool = True) -> Image.Image:
         if not hasattr(cv2, "CascadeClassifier"):
             return image
         grayscale = cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2GRAY)
-        # Apply histogram equalization to normalize brightness/contrast
         grayscale = cv2.equalizeHist(grayscale)
 
         faces = get_face_detector().detectMultiScale(
@@ -189,8 +185,6 @@ def crop_largest_face(image: Image.Image, emit_log: bool = True) -> Image.Image:
 
         x, y, width, height = max(faces, key=lambda face: face[2] * face[3])
 
-        # Extra margins: forehead (top: 25%), chin (bottom: 20%), sides: 15%
-        # This captures eye-brow wrinkles (Angry/Surprise) and mouth curvature (Sad/Disgust)
         top_margin = int(height * 0.25)
         bottom_margin = int(height * 0.18)
         side_margin = int(width * 0.15)
@@ -215,14 +209,16 @@ def crop_largest_face(image: Image.Image, emit_log: bool = True) -> Image.Image:
         return image
 
 
-def load_model():
-    global _model, _preprocess, _model_labels, _model_name_display
+def load_model(force_reload: bool = False):
+    global _model, _preprocess, _model_labels, _model_name_display, _model_mtime
 
-    if _model is not None:
+    current_mtime = MODEL_PATH.stat().st_mtime if MODEL_PATH.is_file() else 0.0
+    if _model is not None and not force_reload and current_mtime <= _model_mtime:
         return _model
 
     with _model_lock:
-        if _model is not None:
+        current_mtime = MODEL_PATH.stat().st_mtime if MODEL_PATH.is_file() else 0.0
+        if _model is not None and not force_reload and current_mtime <= _model_mtime:
             return _model
         try:
             from torchvision import transforms
@@ -287,6 +283,7 @@ def load_model():
                 ),
             ])
             _model = network
+            _model_mtime = current_mtime
             emit_system_log(
                 "SUCCESS",
                 "MODEL",
@@ -311,8 +308,6 @@ def decode_image(image_bytes: bytes) -> Image.Image:
         raise HTTPException(status_code=400, detail="Request does not contain a valid image") from exc
 
 
-# Sensitivity calibrators: Boost hard-to-detect subtle emotions (Angry, Sad, Surprise, Fear)
-# and reduce slight over-confidence of Happy & Neutral caused by dataset bias.
 EMOTION_SENSITIVITY = {
     "Angry": 1.25,
     "Disgust": 1.30,
@@ -333,7 +328,6 @@ def run_inference(image: Image.Image, emit_log: bool = True):
             model_input = _preprocess(face_image).unsqueeze(0)
             logits = network(model_input)[0]
 
-            # Rebalance logits with calibrated sensitivity
             calibrated_logits = logits.clone()
             for i, label in enumerate(_model_labels):
                 factor = EMOTION_SENSITIVITY.get(label, 1.0)
@@ -446,9 +440,7 @@ def predict_video(file: UploadFile = File(...)):
             {"filename": file.filename, "durationSeconds": round(duration_seconds, 1), "totalFrames": total_frames, "fps": round(fps, 1)}
         )
 
-        # Sample at 1 frame per second (step = round(fps))
         sample_step = max(1, int(round(fps)))
-        # Limit max analysis points to 180 seconds (3 mins) to keep inference fast
         max_samples = 180
 
         timeline = []
@@ -467,7 +459,6 @@ def predict_video(file: UploadFile = File(...)):
                 secs = current_sec % 60
                 timestamp_str = f"{mins:02d}:{secs:02d}"
 
-                # OpenCV frame is BGR -> convert to RGB PIL Image
                 rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 pil_image = Image.fromarray(rgb_frame)
 
@@ -495,7 +486,6 @@ def predict_video(file: UploadFile = File(...)):
             emit_system_log("WARN", "VIDEO", f"No valid faces or frames analyzed in video {file.filename}")
             raise HTTPException(status_code=400, detail="No valid frames could be analyzed in the video.")
 
-        # Aggregate summary percentages
         total_analyzed = len(timeline)
         distribution = {
             emotion: round((count / total_analyzed) * 100, 1)
@@ -541,7 +531,9 @@ def predict_video(file: UploadFile = File(...)):
             except OSError:
                 pass
 
-CLASSIFICATION_REPORT = {
+METRICS_FILE = Path(__file__).resolve().parent / "models" / "metrics.json"
+
+DEFAULT_CLASSIFICATION_REPORT = {
     "classes": [
         {"emotion": "Angry",    "emoji": "😠", "precision": 0.2495, "recall": 0.1284, "f1": 0.1695, "support": 958},
         {"emotion": "Disgust",  "emoji": "🤢", "precision": 0.0000, "recall": 0.0000, "f1": 0.0000, "support": 111},
@@ -556,6 +548,19 @@ CLASSIFICATION_REPORT = {
     "weighted_avg": {"precision": 0.2374, "recall": 0.2914, "f1": 0.2439},
     "total_support": 7178,
 }
+
+
+def load_classification_report() -> dict:
+    """Load latest metrics from metrics.json generated automatically by train.py, fallback to default."""
+    if METRICS_FILE.exists():
+        try:
+            with open(METRICS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict) and "classes" in data and "accuracy" in data:
+                    return data
+        except Exception as exc:
+            emit_system_log("WARN", "MODEL", f"Failed reading dynamic metrics.json: {exc}")
+    return DEFAULT_CLASSIFICATION_REPORT
 
 
 def _parse_training_log() -> list[dict]:
@@ -590,12 +595,14 @@ def _parse_training_log() -> list[dict]:
 def get_model_metrics():
     """Return classification report metrics and training epoch history."""
     training_history = _parse_training_log()
+    report = load_classification_report()
     return {
         "success": True,
         "model": _model_name_display,
-        "classificationReport": CLASSIFICATION_REPORT,
+        "classificationReport": report,
         "trainingHistory": training_history,
         "bestValAccuracy": max((e["valAcc"] for e in training_history), default=None),
+        "isDynamic": METRICS_FILE.exists(),
     }
 
 @app.get("/api/v1/system-logs")

@@ -1,8 +1,10 @@
 import argparse
+import json
 import random
 from copy import deepcopy
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch import nn
 from torch.optim import AdamW
@@ -50,6 +52,11 @@ def parse_args():
     )
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--eval-only",
+        action="store_true",
+        help="Skip training and run evaluation on validation set, generating metrics.json directly.",
+    )
     return parser.parse_args()
 
 
@@ -159,7 +166,8 @@ def evaluate(model, loader, criterion, device):
 
 def train_phase(model, train_loader, val_loader, criterion, optimizer, device,
                 epochs, patience, phase_name, fine_tuning, scheduler_min_lr,
-                output, labels, image_size, model_name, best_accuracy, best_state):
+                output, labels, image_size, model_name, best_accuracy, best_state,
+                train_log_file=None):
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=epochs, eta_min=scheduler_min_lr
     )
@@ -173,11 +181,18 @@ def train_phase(model, train_loader, val_loader, criterion, optimizer, device,
         val_loss, val_accuracy = evaluate(model, val_loader, criterion, device)
         scheduler.step()
         learning_rates = ", ".join(f"{group['lr']:.1e}" for group in optimizer.param_groups)
-        print(
+        log_line = (
             f"{phase_name} {epoch}/{epochs} | "
             f"train loss {train_loss:.4f}, accuracy {train_accuracy:.2%} | "
             f"val loss {val_loss:.4f}, accuracy {val_accuracy:.2%} | lr {learning_rates}"
         )
+        print(log_line)
+        if train_log_file:
+            try:
+                with open(train_log_file, "a", encoding="utf-8") as f:
+                    f.write(log_line + "\n")
+            except Exception:
+                pass
 
         if val_accuracy > best_accuracy:
             best_accuracy = val_accuracy
@@ -208,6 +223,93 @@ def train_phase(model, train_loader, val_loader, criterion, optimizer, device,
     return best_accuracy, best_state
 
 
+def evaluate_and_export_metrics(model, val_loader, labels, device, output_path: Path):
+    """Automatically run evaluation on validation set and export metrics.json for UI consumption."""
+    model.eval()
+    all_preds = []
+    all_targets = []
+    print("\n[Auto-Evaluation] Calculating detailed classification metrics on validation set...", flush=True)
+    with torch.inference_mode():
+        for images, targets in val_loader:
+            images = images.to(device, non_blocking=True)
+            logits = model(images)
+            preds = logits.argmax(dim=1).cpu().numpy()
+            all_preds.extend(preds.tolist())
+            all_targets.extend(targets.numpy().tolist())
+
+    all_preds = np.array(all_preds)
+    all_targets = np.array(all_targets)
+    total_samples = len(all_targets)
+
+    EMOTION_EMOJIS = {
+        "Angry": "😠",
+        "Disgust": "🤢",
+        "Fear": "😨",
+        "Happy": "😊",
+        "Neutral": "😐",
+        "Sad": "😢",
+        "Surprise": "😮",
+    }
+
+    classes_report = []
+    precisions = []
+    recalls = []
+    f1s = []
+    supports = []
+
+    for idx, label in enumerate(labels):
+        tp = int(np.sum((all_preds == idx) & (all_targets == idx)))
+        fp = int(np.sum((all_preds == idx) & (all_targets != idx)))
+        fn = int(np.sum((all_preds != idx) & (all_targets == idx)))
+        support = int(np.sum(all_targets == idx))
+
+        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+        f1 = (2 * precision * recall) / (precision + recall) if (precision + recall) > 0 else 0.0
+
+        classes_report.append({
+            "emotion": label,
+            "emoji": EMOTION_EMOJIS.get(label, "😐"),
+            "precision": round(float(precision), 4),
+            "recall": round(float(recall), 4),
+            "f1": round(float(f1), 4),
+            "support": support,
+        })
+        precisions.append(precision)
+        recalls.append(recall)
+        f1s.append(f1)
+        supports.append(support)
+
+    total_correct = int(np.sum(all_preds == all_targets))
+    accuracy = round(float(total_correct / total_samples), 4) if total_samples > 0 else 0.0
+    macro_avg = {
+        "precision": round(float(np.mean(precisions)), 4),
+        "recall": round(float(np.mean(recalls)), 4),
+        "f1": round(float(np.mean(f1s)), 4),
+    }
+    weighted_avg = {
+        "precision": round(float(np.average(precisions, weights=supports)), 4) if total_samples > 0 else 0.0,
+        "recall": round(float(np.average(recalls, weights=supports)), 4) if total_samples > 0 else 0.0,
+        "f1": round(float(np.average(f1s, weights=supports)), 4) if total_samples > 0 else 0.0,
+    }
+
+    report = {
+        "classes": classes_report,
+        "accuracy": accuracy,
+        "macro_avg": macro_avg,
+        "weighted_avg": weighted_avg,
+        "total_support": total_samples,
+    }
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+
+    print(f"[Auto-Evaluation] Metrics successfully exported to: {output_path}")
+    print(f"[Auto-Evaluation] Accuracy: {accuracy:.2%} | Macro F1: {macro_avg['f1']:.4f} | Weighted F1: {weighted_avg['f1']:.4f}")
+    return report
+
+
 def main():
     args = parse_args()
     if args.warmup_epochs < 1 or args.finetune_epochs < 1 or args.batch_size < 1:
@@ -235,17 +337,32 @@ def main():
         pin_memory=device.type == "cuda",
     )
 
+    init_weights = None if args.eval_only else (
+        EfficientNet_B0_Weights.DEFAULT if args.model_name == "efficientnet_b0"
+        else MobileNet_V3_Large_Weights.IMAGENET1K_V2
+    )
     if args.model_name == "efficientnet_b0":
-        model = efficientnet_b0(weights=EfficientNet_B0_Weights.DEFAULT)
+        model = efficientnet_b0(weights=init_weights)
         model.classifier[0].p = 0.4
         model.classifier[1] = nn.Linear(model.classifier[1].in_features, len(labels))
     else:
-        model = mobilenet_v3_large(weights=MobileNet_V3_Large_Weights.IMAGENET1K_V2)
+        model = mobilenet_v3_large(weights=init_weights)
         model.classifier[2].p = 0.5
         model.classifier[-1] = nn.Linear(model.classifier[-1].in_features, len(labels))
 
     model.to(device)
     args.output.parent.mkdir(parents=True, exist_ok=True)
+
+    if args.eval_only:
+        if not args.output.is_file():
+            raise FileNotFoundError(f"Cannot evaluate: checkpoint not found at {args.output}")
+        print(f"Loading checkpoint for evaluation: {args.output}")
+        checkpoint = torch.load(args.output, map_location=device, weights_only=True)
+        state_dict = checkpoint.get("state_dict", checkpoint) if isinstance(checkpoint, dict) else checkpoint
+        model.load_state_dict(state_dict)
+        metrics_json_path = BACKEND_DIR / "models" / "metrics.json"
+        evaluate_and_export_metrics(model, val_loader, labels, device, metrics_json_path)
+        return
 
     class_counts = torch.bincount(torch.tensor(train_set.targets), minlength=len(labels)).float()
     class_weights = torch.sqrt(class_counts.sum() / (len(labels) * class_counts)).to(device)
@@ -260,11 +377,19 @@ def main():
     warmup_optimizer = AdamW(
         model.classifier.parameters(), lr=args.classifier_learning_rate, weight_decay=args.weight_decay
     )
+    train_log_file = BACKEND_DIR / "train.log"
+    try:
+        with open(train_log_file, "a", encoding="utf-8") as f:
+            f.write(f"\n# --- Session: {args.model_name} (image_size: {args.image_size}) ---\n")
+    except Exception:
+        pass
+
     print(f"Device: {device}; classes: {labels}; warm-up with frozen backbone")
     best_accuracy, best_state = train_phase(
         model, train_loader, val_loader, criterion, warmup_optimizer, device,
         args.warmup_epochs, args.patience, "warm-up", False, 1e-6,
         args.output, labels, args.image_size, args.model_name, best_accuracy, best_state,
+        train_log_file=train_log_file,
     )
 
     layer_count = set_trainable_layers(model, args.unfreeze_last_layers)
@@ -285,11 +410,16 @@ def main():
         model, train_loader, val_loader, criterion, fine_tune_optimizer, device,
         args.finetune_epochs, args.patience, "fine-tune", True, 1e-6,
         args.output, labels, args.image_size, args.model_name, best_accuracy, best_state,
+        train_log_file=train_log_file,
     )
 
     if best_state is not None:
         model.load_state_dict(best_state)
     print(f"Training complete; best validation accuracy: {best_accuracy:.2%}")
+
+    # Automatically compute and export classification metrics to metrics.json
+    metrics_json_path = BACKEND_DIR / "models" / "metrics.json"
+    evaluate_and_export_metrics(model, val_loader, labels, device, metrics_json_path)
 
 
 if __name__ == "__main__":
